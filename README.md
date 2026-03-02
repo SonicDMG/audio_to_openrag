@@ -1,6 +1,18 @@
 # 🎙️ Audio to OpenRAG Pipeline
 
+<div align="center">
+
+<img src="public/logos/youtube_logo.png" alt="YouTube" height="60" style="vertical-align: middle;"/>
+<span style="font-size: 2em; vertical-align: middle;">&nbsp;&nbsp;→&nbsp;&nbsp;</span>
+<img src="public/logos/docling_logo.svg" alt="Docling" height="60" style="vertical-align: middle;"/>
+<span style="font-size: 2em; vertical-align: middle;">&nbsp;&nbsp;→&nbsp;&nbsp;</span>
+<img src="public/logos/openrag-logo-dog.svg" alt="OpenRAG" height="60" style="vertical-align: middle;"/>
+
+*Download audio from YouTube • Transcribe with Docling • Ingest into OpenRAG*
+
 ![Python](https://img.shields.io/badge/python-3.12+-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Whisper](https://img.shields.io/badge/ASR-Whisper%20Turbo-orange) ![OpenRAG](https://img.shields.io/badge/RAG-OpenRAG-purple)
+
+</div>
 
 Download audio from any YouTube video, playlist, or channel, transcribe it using **[Docling](https://github.com/DS4SD/docling)**, and ingest it into **[OpenRAG](https://github.com/langflow-ai/openrag)** for semantic search and retrieval-augmented generation.
 
