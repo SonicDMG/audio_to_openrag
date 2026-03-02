@@ -124,12 +124,14 @@ Edit `.env` with these required variables:
 ## How It Works
 
 1. **Download** — Fetches audio from YouTube as MP3
-2. **Transcribe** — Uses Docling with Whisper Turbo backend for speech-to-text
+2. **Transcribe** — Uses Docling with Whisper Turbo backend for speech-to-text (plain text, no speaker labels)
 3. **Format** — Creates a structured Markdown transcript
 4. **Ingest** — Uploads to OpenRAG for semantic search
 5. **Track** — Saves state to prevent duplicate processing
 
 Output transcripts are saved in `./transcripts/` as Markdown files.
+
+**Note:** The current implementation produces plain text transcripts without speaker identification or labels. All audio is transcribed as continuous text.
 
 ---
 
