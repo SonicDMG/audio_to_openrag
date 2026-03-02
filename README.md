@@ -149,4 +149,6 @@ Output transcripts are saved in `./transcripts/` as Markdown files.
 
 ## License
 
-MIT © The Flow
+MIT License - see [LICENSE](LICENSE) file for details.
+
+Copyright © 2026 SonicDMG
