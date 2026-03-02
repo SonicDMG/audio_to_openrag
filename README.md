@@ -113,6 +113,13 @@ cp .env.example .env
 
 ## Usage
 
+> **Important:** Always ensure your virtual environment is activated before running commands:
+> ```bash
+> source .venv/bin/activate  # macOS / Linux
+> # .venv\Scripts\activate   # Windows
+> ```
+> You can verify the correct Python is active with: `which python` (should show `.venv/bin/python`)
+
 ### Ingest Command
 
 The `ingest` command downloads, transcribes, diarizes, and uploads one or more episodes to OpenRAG.
@@ -259,6 +266,30 @@ The pipeline will refuse to run without an API key. Copy the example env file an
 cp .env.example .env
 # Edit .env and set OPENRAG_API_KEY=your_key_here
 ```
+
+---
+
+### `faster-whisper is not installed` or import errors
+
+If you see warnings about faster-whisper not being available, or import errors for mlx-whisper, this usually means you're running the script with the system Python instead of the virtual environment Python.
+
+**Solution:**
+
+1. Ensure your virtual environment is activated:
+   ```bash
+   source .venv/bin/activate  # macOS / Linux
+   # .venv\Scripts\activate   # Windows
+   ```
+
+2. Verify you're using the correct Python:
+   ```bash
+   which python  # Should show: /path/to/audio_to_openrag/.venv/bin/python
+   ```
+
+3. If the venv is activated but imports still fail, reinstall dependencies:
+   ```bash
+   pip install -e .
+   ```
 
 ---
 

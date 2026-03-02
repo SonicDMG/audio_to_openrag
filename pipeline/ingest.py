@@ -77,6 +77,7 @@ async def _ensure_podcast_filter(client: Any, filename: str) -> str | None:
 
     Returns the filter ID on success, or None if creation failed.
     """
+    # pylint: disable=import-outside-toplevel
     from openrag_sdk.models import (  # type: ignore[import]
         CreateKnowledgeFilterOptions,
         KnowledgeFilterQueryData,
@@ -158,6 +159,7 @@ async def _delete_if_exists(client: object, filename: str) -> None:
         client:   An OpenRAGClient instance.
         filename: Basename of the document to delete.
     """
+    # pylint: disable=import-outside-toplevel
     from openrag_sdk import OpenRAGClient  # type: ignore[import]
     from openrag_sdk.exceptions import NotFoundError  # type: ignore[import]
 
@@ -174,7 +176,7 @@ async def _delete_if_exists(client: object, filename: str) -> None:
         logger.debug(
             "Document '%s' not found in OpenRAG (nothing to delete).", filename
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.warning(
             "Could not delete document '%s' from OpenRAG: %s. "
             "Proceeding with re-ingest anyway.",
@@ -195,6 +197,7 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
         An :class:`IngestResult` describing the outcome.
     """
     try:
+        # pylint: disable=import-outside-toplevel
         from openrag_sdk import OpenRAGClient  # type: ignore[import]
         from openrag_sdk.exceptions import AuthenticationError  # type: ignore[import]
         from openrag_sdk.models import IngestTaskStatus  # type: ignore[import]
@@ -226,8 +229,9 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             logger.info(
-                "Ingesting '%s' into OpenRAG (attempt %d/%d)…",
+                "📤 Sending document to OpenRAG: '%s' → %s (attempt %d/%d)",
                 filename,
+                base_url,
                 attempt,
                 _MAX_RETRIES,
             )
@@ -239,7 +243,9 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
 
             # result is IngestTaskStatus when wait=True
             task_id: str = result.task_id
-            task_status: str = result.status if isinstance(result, IngestTaskStatus) else "completed"
+            task_status: str = (
+                result.status if isinstance(result, IngestTaskStatus) else "completed"
+            )
 
             if isinstance(result, IngestTaskStatus) and result.status == "failed":
                 failed_files = result.failed_files
@@ -249,10 +255,12 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
                 )
 
             logger.info(
-                "Ingestion successful: filename='%s' task_id=%s status=%s",
+                "✅ Document successfully sent to OpenRAG: "
+                "filename='%s' task_id=%s status=%s url=%s",
                 filename,
                 task_id,
                 task_status,
+                base_url,
             )
 
             # Ensure the "Podcast" knowledge filter includes this file
@@ -270,7 +278,7 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
                         "Podcast filter update returned no ID for filename=%s",
                         filename,
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("Could not update podcast filter (non-fatal): %s", exc)
 
             return IngestResult(
@@ -288,7 +296,7 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
                 "(Key value not shown for security.)"
             ) from exc
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             err_str = str(exc)
             err_lower = err_str.lower()
 

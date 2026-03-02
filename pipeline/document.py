@@ -18,12 +18,35 @@ from __future__ import annotations
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.acquire import EpisodeAudio
-from pipeline.diarize import DiarizedSegment
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DiarizedSegment:
+    """A single speaker-attributed transcript segment.
+
+    Attributes:
+        speaker_label: Human-readable label, e.g. "Speaker 1", "Speaker 2".
+                      Empty string for transcripts without speaker labels.
+        start:         Segment start time in seconds.
+        end:           Segment end time in seconds.
+        text:          Transcribed text for this segment.
+    """
+
+    speaker_label: str
+    start: float
+    end: float
+    text: str
 
 # Maximum characters for the title portion of the output filename
 _MAX_TITLE_CHARS = 60
@@ -202,8 +225,8 @@ def _convert_markdown_to_docling(md_path: Path) -> object:
         Docling is not available.
     """
     try:
-        from docling.datamodel.base_models import InputFormat  # type: ignore[import]
-        from docling.document_converter import DocumentConverter  # type: ignore[import]
+        from docling.datamodel.base_models import InputFormat  # type: ignore[import]  # pylint: disable=import-outside-toplevel
+        from docling.document_converter import DocumentConverter  # type: ignore[import]  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
         logger.warning(
             "Docling not available for Markdown conversion: %s. "
@@ -213,13 +236,20 @@ def _convert_markdown_to_docling(md_path: Path) -> object:
         return _StubDocument(md_path)
 
     try:
+        # Log Docling usage - Markdown processing doesn't require heavy ML models
+        # (unlike PDF processing which uses OCR, layout analysis, table detection)
+        logger.info(
+            "Using Docling DocumentConverter for Markdown processing "
+            "(lightweight parser, no ML models required)"
+        )
+
         converter = DocumentConverter(
             allowed_formats=[InputFormat.MD],
         )
         result = converter.convert(str(md_path))
         logger.debug("Docling Markdown conversion complete for: %s", md_path.name)
         return result.document
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.warning(
             "Docling failed to convert Markdown '%s': %s. "
             "Returning a stub document object.",

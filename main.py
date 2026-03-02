@@ -2,17 +2,20 @@
 main.py — CLI Entrypoint for The Flow Pipeline
 
 Two commands:
-  ingest  <url> [--force] [--dry-run] [--num-speakers N] [--skip-diarization]
+  ingest  <url> [--force] [--dry-run]
   status
 
 Loads .env via python-dotenv, validates required environment variables,
 then orchestrates all pipeline stages with rich progress output.
 
+Transcription uses Docling's AsrPipeline with whisper-turbo.
+Diarization has been removed - transcripts are produced without speaker labels.
+
 Security controls (OWASP):
 - Secrets loaded from .env only; never accepted as CLI arguments
 - YouTube URL validated before any network call (in acquire.py)
 - Required env vars checked at startup before any processing begins
-- HF_TOKEN and OPENRAG_API_KEY values are never logged
+- OPENRAG_API_KEY values are never logged
 """
 
 from __future__ import annotations
@@ -24,15 +27,20 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from pipeline.acquire import EpisodeAudio
-
 import click
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
+
+from pipeline import acquire, document, state, transcribe
+from pipeline import ingest as ingest_mod
+from pipeline.document import DiarizedSegment
+from pipeline.utils import ensure_ffmpeg_on_path
+
+if TYPE_CHECKING:
+    from pipeline.acquire import EpisodeAudio
 
 # Load .env before anything else so env vars are available to all imports
 load_dotenv()
@@ -66,19 +74,16 @@ def _configure_logging() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _check_required_env_vars(dry_run: bool, skip_diarization: bool) -> None:
+def _check_required_env_vars(dry_run: bool) -> None:
     """Validate that required environment variables are set.
 
     Args:
-        dry_run:           If True, OPENRAG_API_KEY is not required (no upload).
-        skip_diarization:  If True, HF_TOKEN is not required (pyannote not used).
+        dry_run: If True, OPENRAG_API_KEY is not required (no upload).
 
     Raises:
         click.ClickException: If any required variable is missing.
     """
     required: list[str] = []
-    if not skip_diarization:
-        required.append("HF_TOKEN")
     if not dry_run:
         required.append("OPENRAG_API_KEY")
 
@@ -108,75 +113,32 @@ def _check_ffmpeg() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_plain_segments(
-    transcript_result: object,
+def _build_plain_segments_from_markdown(
+    markdown: str,
     diarized_segment_cls: type,
-    log: logging.Logger,
 ) -> list:
-    """Build a list of DiarizedSegment objects from raw Whisper segments.
+    """Build a list of DiarizedSegment objects from markdown text.
 
-    Used when diarization is skipped (``--skip-diarization``) or when
-    pyannote returned no output. Each Whisper segment is wrapped in a
-    DiarizedSegment with ``speaker_label=""`` so that ``document.py``
-    renders the text without a speaker prefix.
-
-    Falls back to extracting plain text from the Docling document if
-    Whisper segments are not available.
+    Used when diarization is skipped. The entire markdown text is wrapped
+    in a single DiarizedSegment with ``speaker_label=""`` so that
+    ``document.py`` renders the text without a speaker prefix.
 
     Args:
-        transcript_result:     TranscriptResult from the transcribe stage.
+        markdown:              Markdown text from transcription.
         diarized_segment_cls:  The DiarizedSegment dataclass.
-        log:                   Logger instance.
 
     Returns:
-        List of DiarizedSegment objects (may be empty if no text is found).
+        List containing a single DiarizedSegment (or empty if no text).
     """
-    segments = getattr(transcript_result, "segments", None)
-
-    if segments:
-        return [
-            diarized_segment_cls(
-                speaker_label="",
-                start=s["start"],
-                end=s["end"],
-                text=s.get("text", "").strip(),
-            )
-            for s in segments
-            if s.get("text", "").strip()
-        ]
-
-    # No Whisper segments — try extracting text from the Docling document
-    log.warning(
-        "No Whisper segments available; falling back to Docling document text."
-    )
-    document = getattr(transcript_result, "document", None)
-    fallback_text = ""
-    if document is not None:
-        try:
-            fallback_text = document.export_to_markdown()
-        except Exception:
-            try:
-                fallback_text = " ".join(
-                    getattr(item, "text", "")
-                    for item in getattr(document, "texts", [])
-                    if getattr(item, "text", "")
-                )
-            except Exception:
-                fallback_text = ""
-
-    if fallback_text.strip():
+    if markdown.strip():
         return [
             diarized_segment_cls(
                 speaker_label="",
                 start=0.0,
                 end=0.0,
-                text=fallback_text.strip(),
+                text=markdown.strip(),
             )
         ]
-
-    log.warning(
-        "Could not extract any text. Transcript file will note no content is available."
-    )
     return []
 
 
@@ -208,43 +170,31 @@ def cli() -> None:
     "--dry-run",
     is_flag=True,
     default=False,
-    help="Download, transcribe, and diarize but do NOT upload to OpenRAG.",
+    help="Download and transcribe but do NOT upload to OpenRAG.",
 )
-@click.option(
-    "--num-speakers",
-    type=int,
-    default=2,
-    show_default=True,
-    help="Expected number of speakers for diarization.",
-)
-@click.option(
-    "--skip-diarization",
-    is_flag=True,
-    default=False,
-    help=(
-        "Skip speaker diarization and produce transcripts without speaker labels. "
-        "HF_TOKEN is not required when this flag is set."
-    ),
-)
-def ingest(url: str, force: bool, dry_run: bool, num_speakers: int, skip_diarization: bool) -> None:
-    """Download, transcribe, diarize, and ingest a YouTube episode or playlist.
+def ingest(url: str, force: bool, dry_run: bool) -> None:
+    """Download, transcribe, and ingest a YouTube episode or playlist.
 
     URL can be a single video, a playlist, or a channel URL.
-    Pass --skip-diarization to skip speaker labelling (no HF_TOKEN required).
+    
+    Transcripts are produced without speaker labels using Docling's AsrPipeline.
     """
     log = logging.getLogger(__name__)
 
+    # Inject ffmpeg onto PATH before any preflight check or pipeline stage runs.
+    # This covers non-interactive shells (cron, launchd, VS Code clean env)
+    # where /opt/homebrew/bin is absent from PATH.  Must run before
+    # _check_ffmpeg() so that check can succeed after PATH injection.
+    ensure_ffmpeg_on_path()
+
     # Preflight checks
-    _check_required_env_vars(dry_run=dry_run, skip_diarization=skip_diarization)
+    _check_required_env_vars(dry_run=dry_run)
     _check_ffmpeg()
 
     # Resolve directories from env vars
     audio_dir = Path(os.environ.get("AUDIO_DIR", "./audio"))
     transcripts_dir = Path(os.environ.get("TRANSCRIPTS_DIR", "./transcripts"))
     state_file = Path(os.environ.get("STATE_FILE", "./state.json"))
-
-    # Import pipeline modules (deferred to keep startup fast)
-    from pipeline import acquire, diarize, document, ingest as ingest_mod, state, transcribe
 
     # -----------------------------------------------------------------------
     # Acquire: download all episodes from the URL
@@ -261,52 +211,64 @@ def ingest(url: str, force: bool, dry_run: bool, num_speakers: int, skip_diariza
     console.print(f"[green]Found {total} episode(s) to process.[/green]")
 
     # -----------------------------------------------------------------------
-    # Per-episode processing
+    # Per-episode processing with global progress bar
     # -----------------------------------------------------------------------
     succeeded = 0
     skipped = 0
     failed = 0
 
-    for idx, episode in enumerate(episodes, start=1):
-        console.rule(
-            f"[bold]Episode {idx}/{total}: {episode.title[:70]}"
-        )
+    # Create a global progress bar for the entire batch
+    with Progress(
+        TextColumn("[bold blue]Overall Progress:"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TextColumn("({task.completed}/{task.total} episodes)"),
+        console=console,
+    ) as global_progress:
+        overall_task = global_progress.add_task("Processing episodes", total=total)
 
-        # State check
-        if not force and state.is_ingested(episode.video_id, state_file):
-            console.print(
-                f"[yellow]Skipping[/yellow] {episode.video_id} — already ingested. "
-                "Use --force to re-ingest."
+        for idx, episode in enumerate(episodes, start=1):
+            console.rule(
+                f"[bold]Episode {idx}/{total}: {episode.title[:70]}"
             )
-            skipped += 1
-            continue
 
-        try:
-            _process_episode(
-                episode=episode,
-                transcripts_dir=transcripts_dir,
-                state_file=state_file,
-                force=force,
-                dry_run=dry_run,
-                num_speakers=num_speakers,
-                skip_diarization=skip_diarization,
-                transcribe_mod=transcribe,
-                diarize_mod=diarize,
-                document_mod=document,
-                ingest_mod=ingest_mod,
-                state_mod=state,
-            )
-            succeeded += 1
+            # State check
+            if not force and state.is_ingested(episode.video_id, state_file):
+                console.print(
+                    f"[yellow]Skipping[/yellow] {episode.video_id} — already ingested. "
+                    "Use --force to re-ingest."
+                )
+                skipped += 1
+                global_progress.update(overall_task, advance=1)
+                continue
 
-        except Exception as exc:  # noqa: BLE001
-            log.error(
-                "Episode %s failed: %s",
-                episode.video_id,
-                exc,
-                exc_info=True,
-            )
-            console.print(f"[red]FAILED[/red] {episode.video_id}: {exc}")
-            failed += 1
+            try:
+                _process_episode(
+                    episode=episode,
+                    transcripts_dir=transcripts_dir,
+                    state_file=state_file,
+                    force=force,
+                    dry_run=dry_run,
+                    transcribe_mod=transcribe,
+                    document_mod=document,
+                    ingest_module=ingest_mod,
+                    state_mod=state,
+                )
+                succeeded += 1
+
+            except (OSError, RuntimeError, ValueError, click.ClickException) as exc:
+                log.error(
+                    "Episode %s failed: %s",
+                    episode.video_id,
+                    exc,
+                    exc_info=True,
+                )
+                console.print(f"[red]FAILED[/red] {episode.video_id}: {exc}")
+                failed += 1
+
+            finally:
+                # Update global progress after each episode (success or failure)
+                global_progress.update(overall_task, advance=1)
 
     # -----------------------------------------------------------------------
     # Summary
@@ -330,12 +292,9 @@ def _process_episode(
     state_file: Path,
     force: bool,
     dry_run: bool,
-    num_speakers: int,
-    skip_diarization: bool,
     transcribe_mod: object,
-    diarize_mod: object,
     document_mod: object,
-    ingest_mod: object,
+    ingest_module: object,
     state_mod: object,
 ) -> None:
     """Run all pipeline stages for a single episode.
@@ -343,70 +302,78 @@ def _process_episode(
     Separated from the main ingest() command to keep error handling clean.
     Each stage is wrapped in a rich Progress spinner for user feedback.
 
+    Transcripts are produced without speaker labels using Docling's AsrPipeline.
+
     Args:
-        episode:           EpisodeAudio from the acquisition stage.
-        transcripts_dir:   Directory for Markdown output files.
-        state_file:        Path to state.json.
-        force:             Whether to re-ingest if already present.
-        dry_run:           If True, skip the OpenRAG upload.
-        num_speakers:      Number of speakers for diarization.
-        skip_diarization:  If True, skip pyannote diarization entirely and
-                           produce a plain transcript without speaker labels.
-        *_mod:             Imported pipeline module references.
+        episode:         EpisodeAudio from the acquisition stage.
+        transcripts_dir: Directory for Markdown output files.
+        state_file:      Path to state.json.
+        force:           Whether to re-ingest if already present.
+        dry_run:         If True, skip the OpenRAG upload.
+        *_mod:           Imported pipeline module references.
     """
     log = logging.getLogger(__name__)
-    from pipeline.diarize import DiarizedSegment  # type: ignore[import]
 
+    # Stage 2: Transcription only (diarization is skipped)
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        transcribe_task = progress.add_task("Transcribing audio…", total=100)
+
+        def update_transcribe_progress(pct: float) -> None:
+            progress.update(transcribe_task, completed=pct * 100)
+
+        transcript_result = transcribe_mod.transcribe_audio(  # type: ignore[union-attr]
+            episode.audio_path,
+            progress_callback=update_transcribe_progress,
+        )
+
+        # Update description with model info
+        model_info = getattr(transcript_result, "model_info", "")
+        progress.update(
+            transcribe_task,
+            description=f"[green]✓ Transcription complete[/green] ({model_info})",
+            completed=100,
+        )
+
+    log.info("Diarization skipped — building plain transcript without speaker labels.")
+
+    # Build plain segments from markdown
+    markdown = getattr(transcript_result, "markdown", "")
+    diarized_segments = _build_plain_segments_from_markdown(markdown, DiarizedSegment)
+
+    # Stage 4: Build document
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TimeElapsedColumn(),
         console=console,
-        transient=True,
     ) as progress:
-
-        # Stage 2: Transcribe
-        task = progress.add_task("Transcribing audio…", total=None)
-        transcript_result = transcribe_mod.transcribe_audio(episode.audio_path)  # type: ignore[union-attr]
-        progress.update(task, description="[green]Transcription complete")
-        progress.stop_task(task)
-
-        # Stage 3: Diarize (or skip)
-        if skip_diarization:
-            progress.add_task("[yellow]Diarization skipped (--skip-diarization)", total=None)
-            log.info("Diarization skipped — building plain transcript without speaker labels.")
-            diarized_segments = _build_plain_segments(transcript_result, DiarizedSegment, log)
-        else:
-            task = progress.add_task("Diarizing speakers…", total=None)
-            diarized_segments = diarize_mod.diarize_audio(  # type: ignore[union-attr]
-                audio_path=episode.audio_path,
-                segments=transcript_result.segments,
-                num_speakers=num_speakers,
-            )
-            progress.update(task, description="[green]Diarization complete")
-            progress.stop_task(task)
-
-            # If diarization produced nothing because segments were None (no timestamps),
-            # fall back to extracting plain text from the Docling document so the
-            # transcript file still contains the transcribed content.
-            if not diarized_segments and transcript_result.segments is None:
-                diarized_segments = _build_plain_segments(transcript_result, DiarizedSegment, log)
-
-        # Stage 4: Build document
-        task = progress.add_task("Building transcript document…", total=None)
+        task = progress.add_task(
+            "Building transcript document… (Docling Markdown parser)",
+            total=None
+        )
         md_path, _docling_doc = document_mod.build_transcript_document(  # type: ignore[union-attr]
             episode=episode,
             segments=diarized_segments,
             transcripts_dir=transcripts_dir,
         )
-        progress.update(task, description="[green]Document built")
-        progress.stop_task(task)
+        progress.update(
+            task,
+            description="[green]✓ Document built[/green] (Docling Markdown parser)",
+            completed=True
+        )
 
     console.print(f"  [dim]Transcript:[/dim] {md_path.name}")
 
     # Stage 5: Ingest (unless --dry-run)
     openrag_document_id: str | None = None
+    openrag_url = os.environ.get("OPENRAG_URL", "http://localhost:3000")
 
     if dry_run:
         console.print("  [yellow]--dry-run:[/yellow] skipping OpenRAG upload.")
@@ -414,24 +381,38 @@ def _process_episode(
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
             TimeElapsedColumn(),
             console=console,
-            transient=True,
         ) as progress:
-            task = progress.add_task("Uploading to OpenRAG…", total=None)
-            ingest_result = ingest_mod.ingest_transcript(  # type: ignore[union-attr]
+            task = progress.add_task(
+                f"Uploading to OpenRAG ({openrag_url})…",
+                total=None
+            )
+            ingest_result = ingest_module.ingest_transcript(  # type: ignore[union-attr]
                 transcript_path=md_path,
                 force=force,
             )
-            progress.stop_task(task)
+            progress.update(
+                task,
+                description=f"[green]✓ Upload complete[/green] → OpenRAG ({openrag_url})",
+                completed=True
+            )
 
         if ingest_result.status == "success":
             openrag_document_id = ingest_result.document_id
             console.print(
-                f"  [green]Ingested:[/green] task_id={openrag_document_id}"
+                f"  [bold green]✓ Document sent to OpenRAG[/bold green]\n"
+                f"    [dim]URL:[/dim] {openrag_url}\n"
+                f"    [dim]Task ID:[/dim] {openrag_document_id}\n"
+                f"    [dim]File:[/dim] {md_path.name}"
             )
         elif ingest_result.status == "already_exists":
-            console.print("  [yellow]Already exists in OpenRAG[/yellow] (skipped upload).")
+            console.print(
+                f"  [yellow]Document already exists in OpenRAG[/yellow]\n"
+                f"    [dim]URL:[/dim] {openrag_url}\n"
+                f"    [dim]File:[/dim] {md_path.name}"
+            )
         else:
             raise RuntimeError(
                 f"OpenRAG ingestion failed: {ingest_result.error}"
@@ -455,8 +436,6 @@ def _process_episode(
 @cli.command()
 def status() -> None:
     """Show all ingested episodes from state.json."""
-    from pipeline import state
-
     state_file = Path(os.environ.get("STATE_FILE", "./state.json"))
     all_state = state.get_all(state_file)
     episodes = all_state.get("episodes", {})
