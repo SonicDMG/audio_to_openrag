@@ -262,6 +262,63 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
         audio_dir = get_audio_dir()
 
     audio_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check if this is a single video URL and if the file already exists
+    # Extract video ID for single video URLs to check for existing file
+    parsed = urlparse(validated_url)
+    video_id = None
+    
+    if parsed.netloc.lower() == "youtu.be":
+        # youtu.be/VIDEO_ID format
+        video_id = parsed.path.lstrip("/")
+    elif parsed.path == "/watch":
+        # youtube.com/watch?v=VIDEO_ID format
+        qs = parse_qs(parsed.query)
+        v_values = qs.get("v", [])
+        if v_values:
+            video_id = v_values[0]
+    
+    # If we have a video ID and the file exists, skip download
+    if video_id:
+        try:
+            video_id = validate_video_id(video_id)
+            audio_path = audio_dir / f"{video_id}.mp3"
+            
+            if audio_path.exists():
+                logger.info(
+                    "File already exists for video ID %s, skipping download: %s",
+                    video_id,
+                    audio_path.name
+                )
+                # Fetch metadata without downloading to build EpisodeAudio
+                ydl_opts_meta = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "extract_flat": False,
+                    "skip_download": True,
+                }
+                
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts_meta) as ydl:
+                        info = ydl.extract_info(validated_url, download=False)
+                    
+                    if info:
+                        episode = _info_to_episode(info, audio_dir)
+                        logger.info(
+                            "Episode ready (existing file): video_id=%s title=%r",
+                            episode.video_id,
+                            episode.title[:60],
+                        )
+                        return [episode]
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to fetch metadata for existing file, will re-download: %s",
+                        exc
+                    )
+        except (ValueError, RuntimeError):
+            # Invalid video ID or other issue, proceed with normal download
+            pass
+    
     logger.info("Downloading audio from: %s → %s", validated_url, audio_dir)
 
     ydl_opts = _build_ydl_opts(audio_dir)

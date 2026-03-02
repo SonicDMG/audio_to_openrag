@@ -13,7 +13,6 @@ license = { text = "MIT" }
 dependencies = [
     "yt-dlp>=2024.1.0",
     "docling[asr]>=2.74.0",
-    "faster-whisper>=1.0.0",
     "pyannote.audio>=3.1.0",
     "torch>=2.0.0",
     "openrag-sdk>=0.1.3",

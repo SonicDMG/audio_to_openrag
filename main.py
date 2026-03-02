@@ -429,6 +429,59 @@ def _process_episode(
 
 
 # ---------------------------------------------------------------------------
+# remove command
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("video_id")
+def remove(video_id: str) -> None:
+    """Remove an episode from state.json (does NOT delete from OpenRAG).
+    
+    Use this when you've manually deleted a document from OpenRAG and want
+    to re-ingest it. After removing from state, you can run 'ingest' again.
+    
+    To also delete from OpenRAG, use 'ingest --force' instead.
+    """
+    from datetime import datetime, timezone
+    from pipeline.utils import validate_video_id
+    
+    state_file = config.get_state_file()
+    
+    try:
+        video_id = validate_video_id(video_id)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    
+    all_state = state.get_all(state_file)
+    episodes = all_state.get("episodes", {})
+    
+    if video_id not in episodes:
+        console.print(f"[yellow]Video ID '{video_id}' not found in state.json[/yellow]")
+        console.print(f"State file: {state_file}")
+        return
+    
+    # Show what we're removing
+    entry = episodes[video_id]
+    console.print(f"[bold]Removing from state:[/bold]")
+    console.print(f"  Video ID: {video_id}")
+    console.print(f"  Title: {entry.get('title', 'N/A')}")
+    console.print(f"  OpenRAG Doc ID: {entry.get('openrag_document_id', 'N/A')}")
+    
+    # Remove the entry
+    del episodes[video_id]
+    all_state["last_updated"] = datetime.now(timezone.utc).isoformat()
+    
+    # Write back atomically
+    from pipeline.state import _atomic_write
+    _atomic_write(state_file, all_state)
+    
+    console.print(f"[green]✓ Removed {video_id} from state.json[/green]")
+    console.print(f"[dim]Note: This does NOT delete the document from OpenRAG.[/dim]")
+    console.print(f"[dim]You can now re-run 'ingest' to process this video again.[/dim]")
+
+
+# ---------------------------------------------------------------------------
 # status command
 # ---------------------------------------------------------------------------
 
