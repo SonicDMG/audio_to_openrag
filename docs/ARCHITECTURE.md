@@ -243,6 +243,7 @@ doc = result.document  # DoclingDocument with transcript
 **Key Inputs:**
 - `md_path: Path` — Path to the exported `.md` transcript file
 - `metadata: EpisodeMetadata` — Used for logging/confirmation
+- `filter_name: str` — OpenRAG knowledge filter name (default: "Videos")
 
 **Key Outputs:**
 - `document_id: str` — The OpenRAG document ID assigned to the ingested transcript
@@ -257,16 +258,20 @@ import asyncio, os
 from pathlib import Path
 from openrag import OpenRAGClient
 
-async def _ingest(md_path: Path) -> str:
+async def _ingest(md_path: Path, filter_name: str = "Videos") -> str:
     client = OpenRAGClient(
         api_key=os.environ["OPENRAG_API_KEY"],
         base_url=os.environ.get("OPENRAG_URL", "http://localhost:3000"),
     )
     result = await client.documents.ingest(file_path=str(md_path))
+    
+    # Update knowledge filter to include this document
+    await _ensure_podcast_filter(client, md_path.name, filter_name)
+    
     return result.document_id
 
-def ingest_transcript(md_path: Path) -> str:
-    return asyncio.run(_ingest(md_path))
+def ingest_transcript(md_path: Path, filter_name: str = "Videos") -> str:
+    return asyncio.run(_ingest(md_path, filter_name))
 ```
 
 **Design Decisions:**
@@ -280,7 +285,9 @@ def ingest_transcript(md_path: Path) -> str:
    - OCR: disabled
    For a typical 60-minute podcast episode (~10,000–15,000 words), this produces approximately 30–50 chunks per episode.
 
-3. **Retry logic:** A simple exponential backoff retry (max 3 attempts, delays: 1s, 2s, 4s) wraps the `ingest()` call to handle transient network errors against the local Docker container.
+3. **Knowledge filter management:** After ingestion, the document filename is automatically added to the specified OpenRAG knowledge filter (default: "Videos"). This enables query-time filtering to scope searches to specific content categories. The filter is created if it doesn't exist, or updated if it does.
+
+4. **Retry logic:** A simple exponential backoff retry (max 3 attempts, delays: 1s, 2s, 4s) wraps the `ingest()` call to handle transient network errors against the local Docker container.
 
 > ⚠️ **Assumption:** The `openrag-sdk` `ingest()` method returns an object with a `document_id` attribute. The exact response schema must be verified against the installed SDK version.
 
@@ -302,15 +309,15 @@ def ingest_transcript(md_path: Path) -> str:
 
 **CLI Interface:**
 ```
-usage: python main.py [-h] [--force] [--output-dir DIR] [--dry-run] url
+usage: python main.py ingest [-h] [--force] [--dry-run] [--filter TEXT] url
 
 positional arguments:
   url                   YouTube video URL or playlist/channel URL
 
 optional arguments:
   --force               Re-ingest even if episode is already in state.json
-  --output-dir DIR      Directory for downloaded audio (default: ./audio)
   --dry-run             Download and transcribe but do not ingest into OpenRAG
+  --filter TEXT         OpenRAG knowledge filter name (default: Videos)
 ```
 
 **Orchestration Flow:**

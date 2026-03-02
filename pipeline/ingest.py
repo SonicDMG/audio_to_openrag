@@ -65,18 +65,24 @@ class IngestResult:
 # Knowledge filter helpers
 # ---------------------------------------------------------------------------
 
-_PODCAST_FILTER_NAME = "Podcast"
 
-
-async def _ensure_podcast_filter(client: Any, filename: str) -> str | None:
+async def _ensure_podcast_filter(
+    client: Any, filename: str, filter_name: str
+) -> str | None:
     """
-    Idempotently create or update the 'Podcast' knowledge filter,
+    Idempotently create or update a knowledge filter,
     appending ``filename`` to its ``data_sources`` list.
 
-    This is a query-time filter — it scopes searches to podcast transcripts
+    This is a query-time filter — it scopes searches to documents
     by tracking their filenames. It is non-fatal: callers must catch exceptions.
 
-    Returns the filter ID on success, or None if creation failed.
+    Args:
+        client:      OpenRAG client instance.
+        filename:    Document filename to add to the filter.
+        filter_name: Name of the knowledge filter to create/update.
+
+    Returns:
+        The filter ID on success, or None if creation failed.
     """
     # pylint: disable=import-outside-toplevel
     from openrag_sdk.models import (  # type: ignore[import]
@@ -86,17 +92,17 @@ async def _ensure_podcast_filter(client: Any, filename: str) -> str | None:
     )
 
     existing: list = await client.knowledge_filters.search(
-        _PODCAST_FILTER_NAME, limit=20
+        filter_name, limit=20
     )
     podcast_filter = next(
-        (f for f in existing if f.name == _PODCAST_FILTER_NAME), None
+        (f for f in existing if f.name == filter_name), None
     )
 
     if podcast_filter is None:
         # Create the filter with this file as the first data_source
         options = CreateKnowledgeFilterOptions(
-            name=_PODCAST_FILTER_NAME,
-            description="Auto-created filter for podcast transcripts",
+            name=filter_name,
+            description="Auto-created knowledge filter",
             queryData=KnowledgeFilterQueryData(
                 query="",
                 filters={"data_sources": [filename], "document_types": ["*"]},
@@ -186,13 +192,16 @@ async def _delete_if_exists(client: object, filename: str) -> None:
         )
 
 
-async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
+async def _ingest_async(
+    transcript_path: Path, force: bool, filter_name: str
+) -> IngestResult:
     """Async implementation of the ingestion logic.
 
     Args:
         transcript_path: Path to the Markdown transcript file.
         force:           If True, attempt to delete the existing document from
                          OpenRAG before re-ingesting.
+        filter_name:     Name of the OpenRAG knowledge filter to create/update.
 
     Returns:
         An :class:`IngestResult` describing the outcome.
@@ -264,23 +273,29 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
                 base_url,
             )
 
-            # Ensure the "Podcast" knowledge filter includes this file
+            # Ensure the knowledge filter includes this file
             filter_id: str | None = None
             try:
-                filter_id = await _ensure_podcast_filter(client, filename)
+                filter_id = await _ensure_podcast_filter(client, filename, filter_name)
                 if filter_id:
                     logger.info(
-                        "Podcast filter updated: filter_id=%s filename=%s",
+                        "Knowledge filter '%s' updated: filter_id=%s filename=%s",
+                        filter_name,
                         filter_id,
                         filename,
                     )
                 else:
                     logger.warning(
-                        "Podcast filter update returned no ID for filename=%s",
+                        "Knowledge filter '%s' update returned no ID for filename=%s",
+                        filter_name,
                         filename,
                     )
             except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning("Could not update podcast filter (non-fatal): %s", exc)
+                logger.warning(
+                    "Could not update knowledge filter '%s' (non-fatal): %s",
+                    filter_name,
+                    exc,
+                )
 
             return IngestResult(
                 document_id=task_id,
@@ -349,6 +364,7 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
 def ingest_transcript(
     transcript_path: Path,
     force: bool = False,
+    filter_name: str = "Videos",
 ) -> IngestResult:
     """Upload a Markdown transcript to OpenRAG and return the result.
 
@@ -368,6 +384,8 @@ def ingest_transcript(
         transcript_path: Path to the ``.md`` transcript file to upload.
         force:           If True, delete the existing OpenRAG document (if any)
                          before re-ingesting. Default: False.
+        filter_name:     Name of the OpenRAG knowledge filter to create/update.
+                         Default: "Videos".
 
     Returns:
         An :class:`IngestResult` with status "success", "already_exists",
@@ -384,10 +402,11 @@ def ingest_transcript(
         )
 
     logger.info(
-        "Starting OpenRAG ingestion for: %s (force=%s)",
+        "Starting OpenRAG ingestion for: %s (force=%s, filter=%s)",
         transcript_path.name,
         force,
+        filter_name,
     )
 
-    return asyncio.run(_ingest_async(transcript_path, force))
+    return asyncio.run(_ingest_async(transcript_path, force, filter_name))
 

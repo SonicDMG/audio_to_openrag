@@ -172,7 +172,12 @@ def cli() -> None:
     default=False,
     help="Download and transcribe but do NOT upload to OpenRAG.",
 )
-def ingest(url: str, force: bool, dry_run: bool) -> None:
+@click.option(
+    "--filter",
+    default="Videos",
+    help="OpenRAG knowledge filter name (default: Videos).",
+)
+def ingest(url: str, force: bool, dry_run: bool, filter: str) -> None:
     """Download, transcribe, and ingest a YouTube episode or playlist.
 
     URL can be a single video, a playlist, or a channel URL.
@@ -249,6 +254,7 @@ def ingest(url: str, force: bool, dry_run: bool) -> None:
                     state_file=state_file,
                     force=force,
                     dry_run=dry_run,
+                    filter_name=filter,
                     transcribe_mod=transcribe,
                     document_mod=document,
                     ingest_module=ingest_mod,
@@ -292,6 +298,7 @@ def _process_episode(
     state_file: Path,
     force: bool,
     dry_run: bool,
+    filter_name: str,
     transcribe_mod: object,
     document_mod: object,
     ingest_module: object,
@@ -310,6 +317,7 @@ def _process_episode(
         state_file:      Path to state.json.
         force:           Whether to re-ingest if already present.
         dry_run:         If True, skip the OpenRAG upload.
+        filter_name:     OpenRAG knowledge filter name.
         *_mod:           Imported pipeline module references.
     """
     log = logging.getLogger(__name__)
@@ -392,6 +400,7 @@ def _process_episode(
             ingest_result = ingest_module.ingest_transcript(  # type: ignore[union-attr]
                 transcript_path=md_path,
                 force=force,
+                filter_name=filter_name,
             )
             progress.update(
                 task,

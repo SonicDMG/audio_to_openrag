@@ -80,6 +80,9 @@ uv run python main.py ingest "https://www.youtube.com/@YourChannel"
 # Ingest a playlist
 uv run python main.py ingest "https://www.youtube.com/playlist?list=PLAYLIST_ID"
 
+# Ingest with a custom knowledge filter
+uv run python main.py ingest "https://www.youtube.com/watch?v=VIDEO_ID" --filter "TechTalks"
+
 # Check ingestion status
 uv run python main.py status
 
@@ -90,6 +93,11 @@ uv run python main.py remove VIDEO_ID
 **Useful flags:**
 - `--force` — Re-ingest even if already processed (deletes from OpenRAG first)
 - `--dry-run` — Transcribe locally without uploading to OpenRAG
+- `--filter TEXT` — OpenRAG knowledge filter name (default: "Videos")
+  - Associates ingested content with a named knowledge filter in OpenRAG
+  - Enables scoped semantic searches (e.g., search only within "Videos" content)
+  - The filter is automatically created/updated when documents are ingested
+  - Use different filter names to organize content by topic, channel, or category
 
 **Managing State:**
 
