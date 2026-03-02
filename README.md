@@ -16,7 +16,7 @@
 
 Download audio from any YouTube video, playlist, or channel, transcribe it using **[Docling](https://github.com/DS4SD/docling)**, and ingest it into **[OpenRAG](https://github.com/langflow-ai/openrag)** for semantic search and retrieval-augmented generation.
 
-## Technology Stack
+## 🛠️ Technology Stack
 
 This pipeline is built entirely on **open source** platforms:
 
@@ -37,7 +37,7 @@ This pipeline is built entirely on **open source** platforms:
 
 📚 **[View detailed component documentation →](docs/TECHNOLOGY_STACK.md)**
 
-## Attribution
+## 🙏 Attribution
 
 This project builds upon the excellent audio processing work by [Tejas Kumar](https://github.com/TejasQ/example-docling-media). The core audio transcription pipeline was derived from his example, which demonstrates how to use Docling for media transcription. We've extended it to create an end-to-end ingestion pipeline for OpenRAG.
 
@@ -45,9 +45,9 @@ This project builds upon the excellent audio processing work by [Tejas Kumar](ht
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
-### Prerequisites
+### ✅ Prerequisites
 
 1. **Python 3.12+**
 2. **ffmpeg** (for audio conversion)
@@ -62,7 +62,7 @@ This project builds upon the excellent audio processing work by [Tejas Kumar](ht
    - Docling is included with the OpenRAG installation
    - See setup instructions at: https://github.com/langflow-ai/openrag
 
-### Installation
+### 📦 Installation
 
 ```bash
 # Clone and enter directory
@@ -80,7 +80,7 @@ cp .env.example .env
 # Edit .env and add your OPENRAG_API_KEY
 ```
 
-### Usage
+### 💻 Usage
 
 ```bash
 # Ingest a single video
@@ -102,7 +102,7 @@ uv run python main.py status
 uv run python main.py remove VIDEO_ID
 ```
 
-**Useful flags:**
+**⚙️ Useful flags:**
 - `--force` — Re-ingest even if already processed (deletes from OpenRAG first)
 - `--dry-run` — Transcribe locally without uploading to OpenRAG
 - `--filter TEXT` — OpenRAG knowledge filter name (default: "Videos")
@@ -111,7 +111,7 @@ uv run python main.py remove VIDEO_ID
   - The filter is automatically created/updated when documents are ingested
   - Use different filter names to organize content by topic, channel, or category
 
-**Managing State:**
+**📊 Managing State:**
 
 The pipeline tracks processed videos in `state.json` to prevent duplicate work. If you manually delete a document from OpenRAG and want to re-ingest it:
 
@@ -128,7 +128,7 @@ The pipeline tracks processed videos in `state.json` to prevent duplicate work. 
 
 ---
 
-## Configuration
+## ⚙️ Configuration
 
 Edit `.env` with these required variables:
 
@@ -141,7 +141,7 @@ Edit `.env` with these required variables:
 
 ---
 
-## How It Works
+## 🔄 How It Works
 
 1. **Download** — Fetches audio from YouTube as MP3
 2. **Transcribe** — Uses Docling with Whisper Turbo backend for speech-to-text (plain text, no speaker labels)
@@ -155,7 +155,7 @@ Output transcripts are saved in `./transcripts/` as Markdown files.
 
 ---
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
 **`ffmpeg not found`**
 - Install ffmpeg and ensure it's in your PATH
@@ -169,7 +169,7 @@ Output transcripts are saved in `./transcripts/` as Markdown files.
 
 ---
 
-## License
+## 📄 License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
