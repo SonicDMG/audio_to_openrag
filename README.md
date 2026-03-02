@@ -2,7 +2,11 @@
 
 <div align="center">
 
-<img src="public/logos/youtube_logo.png" alt="YouTube" height="60"/> &nbsp;&nbsp;&nbsp; <img src="public/logos/docling_logo.svg" alt="Docling" height="60"/> &nbsp;&nbsp;&nbsp; <img src="public/logos/openrag-logo-dog.svg" alt="OpenRAG" height="60"/>
+<img src="public/logos/youtube_logo.png" alt="YouTube" height="60"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#FF8C2C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" height="60" style="margin: 0 15px; vertical-align: bottom;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+<img src="public/logos/docling_logo.svg" alt="Docling" height="60"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#FF8C2C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" height="60" style="margin: 0 15px; vertical-align: bottom;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+<img src="public/logos/openrag-logo-dog.svg" alt="OpenRAG" height="60"/>
 
 *Download audio from YouTube • Transcribe with Docling • Ingest into OpenRAG*
 
