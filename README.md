@@ -2,15 +2,7 @@
 
 <div align="center">
 
-<table>
-<tr>
-<td align="center"><img src="public/logos/youtube_logo.png" alt="YouTube" height="60"/></td>
-<td align="center" style="font-size: 2em;">→</td>
-<td align="center"><img src="public/logos/docling_logo.svg" alt="Docling" height="60"/></td>
-<td align="center" style="font-size: 2em;">→</td>
-<td align="center"><img src="public/logos/openrag-logo-dog.svg" alt="OpenRAG" height="60"/></td>
-</tr>
-</table>
+<img src="public/logos/youtube_logo.png" alt="YouTube" height="60"/> &nbsp;&nbsp;&nbsp; <img src="public/logos/docling_logo.svg" alt="Docling" height="60"/> &nbsp;&nbsp;&nbsp; <img src="public/logos/openrag-logo-dog.svg" alt="OpenRAG" height="60"/>
 
 *Download audio from YouTube • Transcribe with Docling • Ingest into OpenRAG*
 
