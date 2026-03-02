@@ -16,12 +16,12 @@ Security controls (OWASP):
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from pipeline.acquire import EpisodeAudio
+from pipeline.config import get_transcripts_dir
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,7 @@ def build_transcript_document(
                       fails to convert the Markdown.
     """
     if transcripts_dir is None:
-        transcripts_dir = Path(os.environ.get("TRANSCRIPTS_DIR", "./transcripts"))
+        transcripts_dir = get_transcripts_dir()
 
     transcripts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -273,4 +273,3 @@ class _StubDocument:
     def __repr__(self) -> str:
         return f"_StubDocument(md_path={self.md_path!r})"
 
-# Made with Bob

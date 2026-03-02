@@ -150,19 +150,3 @@ def transcribe_audio(
         raise RuntimeError(f"Docling transcription failed: {exc}") from exc
 
 
-def write_transcript_to_file(markdown: str, output_path: Path) -> None:
-    """Write the markdown transcript to a file.
-
-    Args:
-        markdown: The markdown content to write.
-        output_path: Path where the markdown file should be written.
-
-    Raises:
-        OSError: If the file cannot be written.
-    """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(markdown, encoding="utf-8")
-    logger.info("Transcript written to: %s", output_path)
-
-
-# Made with Bob

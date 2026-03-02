@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from pipeline.config import get_openrag_api_key, get_openrag_url
 
 logger = logging.getLogger(__name__)
 
@@ -207,14 +208,14 @@ async def _ingest_async(transcript_path: Path, force: bool) -> IngestResult:
             "Install with: pip install 'openrag-sdk>=0.1.3'"
         ) from exc
 
-    api_key = os.environ.get("OPENRAG_API_KEY")
+    api_key = get_openrag_api_key()
     if not api_key:
         raise RuntimeError(
             "OPENRAG_API_KEY environment variable is not set. "
             "Add it to your .env file."
         )
 
-    base_url = os.environ.get("OPENRAG_URL", "http://localhost:3000")
+    base_url = get_openrag_url() or "http://localhost:3000"
     filename = transcript_path.name
 
     # Instantiate client — key is used but never logged
@@ -390,4 +391,3 @@ def ingest_transcript(
 
     return asyncio.run(_ingest_async(transcript_path, force))
 
-# Made with Bob

@@ -34,7 +34,7 @@ from rich.logging import RichHandler
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from pipeline import acquire, document, state, transcribe
+from pipeline import acquire, config, document, state, transcribe
 from pipeline import ingest as ingest_mod
 from pipeline.document import DiarizedSegment
 from pipeline.utils import ensure_ffmpeg_on_path
@@ -192,9 +192,9 @@ def ingest(url: str, force: bool, dry_run: bool) -> None:
     _check_ffmpeg()
 
     # Resolve directories from env vars
-    audio_dir = Path(os.environ.get("AUDIO_DIR", "./audio"))
-    transcripts_dir = Path(os.environ.get("TRANSCRIPTS_DIR", "./transcripts"))
-    state_file = Path(os.environ.get("STATE_FILE", "./state.json"))
+    audio_dir = config.get_audio_dir()
+    transcripts_dir = config.get_transcripts_dir()
+    state_file = config.get_state_file()
 
     # -----------------------------------------------------------------------
     # Acquire: download all episodes from the URL
@@ -358,7 +358,7 @@ def _process_episode(
             "Building transcript document… (Docling Markdown parser)",
             total=None
         )
-        md_path, _docling_doc = document_mod.build_transcript_document(  # type: ignore[union-attr]
+        md_path, _ = document_mod.build_transcript_document(  # type: ignore[union-attr]
             episode=episode,
             segments=diarized_segments,
             transcripts_dir=transcripts_dir,
@@ -487,4 +487,3 @@ def status() -> None:
 if __name__ == "__main__":
     cli()
 
-# Made with Bob

@@ -36,45 +36,23 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline.acquire import EpisodeAudio
+from pipeline.config import get_state_file
+from pipeline.utils import validate_video_id
 
 logger = logging.getLogger(__name__)
 
 # Pipeline version stamped into each state entry for future migration support
 _PIPELINE_VERSION = "0.1.0"
 
-# Regex for validating video IDs before writing to state
-_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]+$")
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _validate_video_id(video_id: str) -> str:
-    """Validate that *video_id* contains only filesystem/JSON-safe characters.
-
-    Args:
-        video_id: YouTube video ID to validate.
-
-    Returns:
-        The validated video ID.
-
-    Raises:
-        ValueError: If the video ID contains unexpected characters.
-    """
-    if not _SAFE_ID_PATTERN.match(video_id):
-        raise ValueError(
-            f"Invalid video_id for state write: {video_id!r}. "
-            "Only alphanumeric characters, hyphens, and underscores are allowed."
-        )
-    return video_id
 
 
 def _load_state(state_file: Path) -> dict:
@@ -170,7 +148,7 @@ def is_ingested(video_id: str, state_file: Path | None = None) -> bool:
         True if the video ID is present in state.json, False otherwise.
     """
     if state_file is None:
-        state_file = Path(os.environ.get("STATE_FILE", "./state.json"))
+        state_file = get_state_file()
 
     state = _load_state(state_file)
     return video_id in state.get("episodes", {})
@@ -200,9 +178,9 @@ def mark_ingested(
         RuntimeError: If the state file cannot be written.
     """
     if state_file is None:
-        state_file = Path(os.environ.get("STATE_FILE", "./state.json"))
+        state_file = get_state_file()
 
-    video_id = _validate_video_id(episode.video_id)
+    video_id = validate_video_id(episode.video_id)
 
     state = _load_state(state_file)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -240,8 +218,7 @@ def get_all(state_file: Path | None = None) -> dict:
         does not exist or is corrupt.
     """
     if state_file is None:
-        state_file = Path(os.environ.get("STATE_FILE", "./state.json"))
+        state_file = get_state_file()
 
     return _load_state(state_file)
 
-# Made with Bob

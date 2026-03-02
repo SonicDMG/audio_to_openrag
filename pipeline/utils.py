@@ -90,4 +90,26 @@ def ensure_ffmpeg_on_path() -> str | None:
     )
     return None
 
-# Made with Bob
+def validate_video_id(video_id: str) -> str:
+    """
+    Validate and return a video ID.
+    
+    Args:
+        video_id: The video ID to validate
+        
+    Returns:
+        The validated video ID
+        
+    Raises:
+        ValueError: If the video ID contains invalid characters
+    """
+    from pipeline.constants import SAFE_ID_PATTERN
+    
+    if not SAFE_ID_PATTERN.match(video_id):
+        raise ValueError(
+            f"Invalid video ID '{video_id}': must contain only "
+            "alphanumeric characters, hyphens, and underscores"
+        )
+    return video_id
+
+

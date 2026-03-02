@@ -15,13 +15,16 @@ Security controls (OWASP):
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
+
+from pipeline.config import get_audio_dir
+from pipeline.constants import SAFE_ID_PATTERN
+from pipeline.utils import validate_video_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +39,6 @@ _YOUTUBE_HOSTS = {"www.youtube.com", "youtube.com", "youtu.be"}
 _CHANNEL_PATH_PATTERN = re.compile(
     r"^/(@[\w\-]+(/videos)?|channel/[\w\-]+|c/[\w\-]+)$"
 )
-
-# Only allow characters that are safe for filesystem paths
-_SAFE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ def _validate_youtube_url(url: str) -> str:
     # --- youtu.be/VIDEO_ID ---
     if host == "youtu.be":
         video_id = path.lstrip("/")
-        if video_id and _SAFE_ID_PATTERN.match(video_id):
+        if video_id and SAFE_ID_PATTERN.match(video_id):
             return url
         raise _invalid()
 
@@ -138,7 +138,7 @@ def _validate_youtube_url(url: str) -> str:
     if path == "/watch":
         # Must have a non-empty v= parameter
         v_values = qs.get("v", [])
-        if v_values and _SAFE_ID_PATTERN.match(v_values[0]):
+        if v_values and SAFE_ID_PATTERN.match(v_values[0]):
             return url
         raise _invalid()
 
@@ -154,29 +154,6 @@ def _validate_youtube_url(url: str) -> str:
         return url
 
     raise _invalid()
-
-
-def _sanitize_video_id(video_id: str) -> str:
-    """Ensure *video_id* contains only filesystem-safe characters.
-
-    YouTube video IDs are 11 alphanumeric + hyphen + underscore characters,
-    but we validate defensively in case yt-dlp returns something unexpected.
-
-    Args:
-        video_id: Raw video ID string from yt-dlp info dict.
-
-    Returns:
-        The validated video ID.
-
-    Raises:
-        ValueError: If the video ID contains unexpected characters.
-    """
-    if not _SAFE_ID_PATTERN.match(video_id):
-        raise ValueError(
-            f"Unexpected video ID format: {video_id!r}. "
-            "Only alphanumeric characters, hyphens, and underscores are allowed."
-        )
-    return video_id
 
 
 def _build_ydl_opts(audio_dir: Path) -> dict:
@@ -231,7 +208,7 @@ def _info_to_episode(info: dict, audio_dir: Path) -> EpisodeAudio:
     if not raw_id:
         raise ValueError("yt-dlp returned an entry with no video ID.")
 
-    video_id = _sanitize_video_id(raw_id)
+    video_id = validate_video_id(raw_id)
     audio_path = audio_dir / f"{video_id}.mp3"
 
     if not audio_path.exists():
@@ -282,7 +259,7 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
     validated_url = _validate_youtube_url(url)
 
     if audio_dir is None:
-        audio_dir = Path(os.environ.get("AUDIO_DIR", "./audio"))
+        audio_dir = get_audio_dir()
 
     audio_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Downloading audio from: %s → %s", validated_url, audio_dir)
@@ -395,4 +372,3 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
     )
     return episodes
 
-# Made with Bob

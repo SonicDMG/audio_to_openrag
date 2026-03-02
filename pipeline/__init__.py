@@ -10,4 +10,3 @@ Stages:
   6. state     — Track ingested episodes for idempotency
 """
 
-# Made with Bob
