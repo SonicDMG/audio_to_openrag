@@ -1,4 +1,4 @@
-,"""
+"""
 pipeline/ingest.py — OpenRAG Ingestion Stage
 
 Uploads a Markdown transcript file to a self-hosted OpenRAG instance using

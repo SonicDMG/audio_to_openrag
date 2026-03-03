@@ -37,6 +37,7 @@ from rich.table import Table
 from pipeline import acquire, config, document, state, transcribe
 from pipeline import ingest as ingest_mod
 from pipeline.document import DiarizedSegment
+from pipeline.logos import display_logo
 from pipeline.utils import ensure_ffmpeg_on_path
 
 if TYPE_CHECKING:
@@ -205,6 +206,7 @@ def ingest(url: str, force: bool, dry_run: bool, filter: str) -> None:
     # Acquire: download all episodes from the URL
     # -----------------------------------------------------------------------
     console.rule("[bold blue]Stage 1 — Acquire")
+    display_logo(console, "youtube", "Downloading from YouTube")
     try:
         episodes = acquire.download_episode(url, audio_dir=audio_dir)
     except ValueError as exc:
@@ -323,6 +325,7 @@ def _process_episode(
     log = logging.getLogger(__name__)
 
     # Stage 2: Transcription only (diarization is skipped)
+    display_logo(console, "docling", "Transcribing with Docling ASR")
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -386,6 +389,7 @@ def _process_episode(
     if dry_run:
         console.print("  [yellow]--dry-run:[/yellow] skipping OpenRAG upload.")
     else:
+        display_logo(console, "openrag", f"Uploading to OpenRAG ({openrag_url})")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
