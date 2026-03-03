@@ -40,7 +40,7 @@ YOUTUBE_LOGO = r"""
 
 def display_logo(console: Console, logo_type: str, message: str = "") -> None:
     """Display a logo with an optional message.
-    
+
     Args:
         console: Rich console instance for output
         logo_type: Type of logo to display ('docling', 'openrag', 'youtube')

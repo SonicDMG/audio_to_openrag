@@ -54,7 +54,7 @@ This project builds upon the excellent audio processing work by [Tejas Kumar](ht
    ```bash
    # macOS
    brew install ffmpeg
-   
+
    # Ubuntu/Debian
    sudo apt install ffmpeg
    ```

@@ -14,9 +14,12 @@ Security controls (OWASP):
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -57,6 +60,7 @@ class EpisodeAudio:
         description: Full episode description text.
         webpage_url: Canonical YouTube watch URL.
         channel:     Channel name.
+        duration:    Video duration in seconds (0 if unavailable).
         audio_path:  Absolute path to the downloaded .mp3 file on disk.
     """
 
@@ -66,6 +70,7 @@ class EpisodeAudio:
     description: str
     webpage_url: str
     channel: str
+    duration: int
     audio_path: Path
 
 
@@ -103,7 +108,7 @@ def _validate_youtube_url(url: str) -> str:
 
     try:
         parsed = urlparse(url)
-    except Exception:
+    except (ValueError, TypeError):
         parsed = None  # urlparse rarely raises, but be defensive
 
     def _invalid() -> ValueError:
@@ -190,6 +195,78 @@ def _build_ydl_opts(audio_dir: Path) -> dict:
     }
 
 
+def _load_metadata_cache(audio_dir: Path) -> dict[str, dict]:
+    """Load cached video metadata from disk.
+
+    Args:
+        audio_dir: Directory containing the cache file.
+
+    Returns:
+        Dictionary mapping video_id to metadata dict. Empty dict if cache
+        doesn't exist or is corrupted.
+    """
+    cache_file = audio_dir / ".video_metadata.json"
+    if cache_file.exists():
+        try:
+            with open(cache_file, encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to load metadata cache, will rebuild: %s", exc)
+            return {}
+    return {}
+
+
+def _save_metadata_cache(audio_dir: Path, cache: dict[str, dict]) -> None:
+    """Save video metadata cache to disk atomically.
+
+    Writes to a temporary file first, then renames to avoid corruption if
+    the process is interrupted.
+
+    Args:
+        audio_dir: Directory to save the cache file.
+        cache: Dictionary mapping video_id to metadata dict.
+    """
+    cache_file = audio_dir / ".video_metadata.json"
+    temp_file = audio_dir / ".video_metadata.json.tmp"
+
+    try:
+        # Write to temp file first
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2)
+
+        # Atomic rename (on POSIX systems)
+        temp_file.replace(cache_file)
+    except OSError as exc:
+        logger.warning("Failed to save metadata cache: %s", exc)
+        # Clean up temp file if it exists
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
+
+
+def _extract_metadata_from_info(info: dict) -> dict:
+    """Extract relevant metadata from yt-dlp info dict for caching.
+
+    Args:
+        info: yt-dlp info dictionary for a video.
+
+    Returns:
+        Dictionary containing cached metadata fields.
+    """
+    return {
+        "title": info.get("title", "Unknown"),
+        "duration": info.get("duration", 0),
+        "upload_date": info.get("upload_date"),
+        "uploader": info.get("uploader"),
+        "channel": info.get("channel", info.get("uploader")),
+        "description": info.get("description", ""),
+        "url": info.get("webpage_url", info.get("original_url", "")),
+        "cached_at": datetime.now(UTC).isoformat()
+    }
+
+
 def _info_to_episode(info: dict, audio_dir: Path) -> EpisodeAudio:
     """Convert a yt-dlp info dictionary to an :class:`EpisodeAudio` instance.
 
@@ -224,6 +301,7 @@ def _info_to_episode(info: dict, audio_dir: Path) -> EpisodeAudio:
         description=info.get("description", ""),
         webpage_url=info.get("webpage_url", info.get("original_url", "")),
         channel=info.get("channel", info.get("uploader", "")),
+        duration=info.get("duration", 0) or 0,
         audio_path=audio_path,
     )
 
@@ -233,7 +311,11 @@ def _info_to_episode(info: dict, audio_dir: Path) -> EpisodeAudio:
 # ---------------------------------------------------------------------------
 
 
-def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAudio]:
+def download_episode(
+    url: str,
+    audio_dir: Path | None = None,
+    progress_callback: Callable[[float, int, int, int], None] | None = None,
+) -> list[EpisodeAudio]:
     """Download audio from a YouTube URL and return episode metadata.
 
     Accepts single video URLs, playlist URLs, and channel URLs. For playlists
@@ -244,9 +326,13 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
     predictable and filesystem-safe.
 
     Args:
-        url:       YouTube video, playlist, or channel URL.
-        audio_dir: Directory to save downloaded audio files. Defaults to the
-                   ``AUDIO_DIR`` environment variable, or ``./audio`` if unset.
+        url:              YouTube video, playlist, or channel URL.
+        audio_dir:        Directory to save downloaded audio files. Defaults to the
+                          ``AUDIO_DIR`` environment variable, or ``./audio`` if unset.
+        progress_callback: Optional callback function that receives download progress
+                          as (percentage: float, current_video: int, total_videos: int,
+                          duration_seconds: int). Percentage is between 0.0 and 1.0.
+                          Duration is the length of the current video in seconds (0 if unavailable).
 
     Returns:
         A list of :class:`EpisodeAudio` instances — one per downloaded video.
@@ -262,12 +348,16 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
         audio_dir = get_audio_dir()
 
     audio_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Load metadata cache
+    metadata_cache = _load_metadata_cache(audio_dir)
+    cache_modified = False
+
     # Check if this is a single video URL and if the file already exists
     # Extract video ID for single video URLs to check for existing file
     parsed = urlparse(validated_url)
     video_id = None
-    
+
     if parsed.netloc.lower() == "youtu.be":
         # youtu.be/VIDEO_ID format
         video_id = parsed.path.lstrip("/")
@@ -277,32 +367,63 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
         v_values = qs.get("v", [])
         if v_values:
             video_id = v_values[0]
-    
+
     # If we have a video ID and the file exists, skip download
     if video_id:
         try:
             video_id = validate_video_id(video_id)
             audio_path = audio_dir / f"{video_id}.mp3"
-            
+
             if audio_path.exists():
                 logger.info(
                     "File already exists for video ID %s, skipping download: %s",
                     video_id,
                     audio_path.name
                 )
+
+                # Try to use cached metadata first
+                if video_id in metadata_cache:
+                    logger.info("Using cached metadata for video ID %s", video_id)
+                    cached = metadata_cache[video_id]
+                    episode = EpisodeAudio(
+                        video_id=video_id,
+                        title=cached.get("title", "Unknown"),
+                        upload_date=cached.get("upload_date", ""),
+                        description=cached.get("description", ""),
+                        webpage_url=cached.get("url", validated_url),
+                        channel=cached.get("channel", cached.get("uploader", "")),
+                        duration=cached.get("duration", 0) or 0,
+                        audio_path=audio_path,
+                    )
+                    logger.info(
+                        "Episode ready (cached metadata): video_id=%s title=%r duration=%ds",
+                        episode.video_id,
+                        episode.title[:60],
+                        episode.duration,
+                    )
+                    return [episode]
+
                 # Fetch metadata without downloading to build EpisodeAudio
+                logger.info(
+                    "Metadata not in cache, fetching from YouTube for video ID %s",
+                    video_id
+                )
                 ydl_opts_meta = {
                     "quiet": True,
                     "no_warnings": True,
                     "extract_flat": False,
                     "skip_download": True,
                 }
-                
+
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts_meta) as ydl:
                         info = ydl.extract_info(validated_url, download=False)
-                    
+
                     if info:
+                        # Cache the metadata for future use
+                        metadata_cache[video_id] = _extract_metadata_from_info(info)
+                        _save_metadata_cache(audio_dir, metadata_cache)
+
                         episode = _info_to_episode(info, audio_dir)
                         logger.info(
                             "Episode ready (existing file): video_id=%s title=%r",
@@ -310,7 +431,7 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
                             episode.title[:60],
                         )
                         return [episode]
-                except Exception as exc:
+                except (yt_dlp.utils.DownloadError, yt_dlp.utils.ExtractorError) as exc:
                     logger.warning(
                         "Failed to fetch metadata for existing file, will re-download: %s",
                         exc
@@ -318,7 +439,7 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
         except (ValueError, RuntimeError):
             # Invalid video ID or other issue, proceed with normal download
             pass
-    
+
     logger.info("Downloading audio from: %s → %s", validated_url, audio_dir)
 
     ydl_opts = _build_ydl_opts(audio_dir)
@@ -328,37 +449,129 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
 
     # Custom logger to suppress yt-dlp output while still capturing errors
     class _YdlLogger:
+        """Custom logger for yt-dlp to redirect output to Python logging."""
+
         def debug(self, msg: str) -> None:
+            """Log debug messages from yt-dlp."""
             logger.debug("[yt-dlp] %s", msg)
 
         def info(self, msg: str) -> None:
+            """Log info messages from yt-dlp as debug."""
             logger.debug("[yt-dlp] %s", msg)
 
         def warning(self, msg: str) -> None:
+            """Log warning messages from yt-dlp."""
             logger.warning("[yt-dlp] %s", msg)
 
         def error(self, msg: str) -> None:
+            """Log error messages from yt-dlp."""
             logger.error("[yt-dlp] %s", msg)
 
     ydl_opts["logger"] = _YdlLogger()
 
+    # Track video count and durations for progress reporting
+    current_video_num = 0
+    total_videos = 1  # Default to 1 for single videos
+    video_durations: dict[int, int] = {}  # Map video number to duration in seconds
+
     def _progress_hook(d: dict) -> None:
-        if d.get("status") == "finished":
+        nonlocal current_video_num, total_videos
+        status = d.get("status")
+        if status == "downloading":
+            downloaded = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+            if total > 0 and progress_callback:
+                # Get duration for current video, default to 0 if not available
+                duration = video_durations.get(current_video_num, 0)
+                progress_callback(downloaded / total, current_video_num, total_videos, duration)
+        elif status == "finished":
+            if progress_callback:
+                duration = video_durations.get(current_video_num, 0)
+                progress_callback(1.0, current_video_num, total_videos, duration)
             filename = d.get("filename", "")
             # Log only the basename to avoid leaking full paths
             logger.info("Download finished: %s", Path(filename).name)
+            # Increment video counter when a video finishes downloading
+            current_video_num += 1
 
     ydl_opts["progress_hooks"] = [_progress_hook]
 
+    # First, extract info to determine total video count and durations before downloading
+    # Use options WITHOUT download_archive so we see all videos, not just undownloaded ones
     try:
+        # Create metadata-only options without download archive
+        meta_opts = {k: v for k, v in ydl_opts.items() if k != "download_archive"}
+        meta_opts["logger"] = ydl_opts["logger"]
+
+        with yt_dlp.YoutubeDL(meta_opts) as ydl_meta:
+            # Extract info first to get playlist size and durations (all videos, not just new ones)
+            info_extract = ydl_meta.extract_info(validated_url, download=False)
+            if info_extract:
+                entries = info_extract.get("entries")
+                if entries is not None:
+                    # Playlist or channel - extract durations for each video
+                    # First, convert entries to a list to get the total count
+                    entries_list = [e for e in entries if e is not None]
+                    total_entries = len(entries_list)
+
+                    video_num = 1
+                    for entry in entries_list:
+                        # Extract duration (in seconds), default to 0 if not available
+                        duration = entry.get("duration", 0) or 0
+                        video_durations[video_num] = duration
+
+                        # Call progress callback during metadata extraction
+                        if progress_callback:
+                            progress_callback(
+                                video_num / total_entries, video_num, total_entries, duration
+                            )
+
+                        # Cache metadata for all videos in the playlist
+                        entry_id = entry.get("id")
+                        if entry_id and entry_id not in metadata_cache:
+                            try:
+                                validated_entry_id = validate_video_id(entry_id)
+                                metadata_cache[validated_entry_id] = (
+                                    _extract_metadata_from_info(entry)
+                                )
+                                cache_modified = True
+                            except ValueError:
+                                pass  # Skip invalid video IDs
+
+                        video_num += 1
+                    total_videos = len(video_durations)
+                    # Log total videos immediately after extraction
+                    logger.info("Playlist/channel detected: %d total videos.", total_videos)
+                else:
+                    # Single video - extract its duration
+                    duration = info_extract.get("duration", 0) or 0
+                    video_durations[1] = duration
+
+                    # Call progress callback for single video metadata extraction
+                    if progress_callback:
+                        progress_callback(0.0, 1, 1, duration)
+
+                    # Cache metadata for single video
+                    entry_id = info_extract.get("id")
+                    if entry_id and entry_id not in metadata_cache:
+                        try:
+                            validated_entry_id = validate_video_id(entry_id)
+                            metadata_cache[validated_entry_id] = (
+                                _extract_metadata_from_info(info_extract)
+                            )
+                            cache_modified = True
+                        except ValueError:
+                            pass
+
+        # Now perform the actual download with the full options (including download_archive)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # extract_info returns the full info dict; download=True triggers download
+            current_video_num = 1  # Start counting from 1
             info = ydl.extract_info(validated_url, download=True)
     except yt_dlp.utils.DownloadError as exc:
         raise RuntimeError(
             f"yt-dlp failed to download '{validated_url}': {exc}"
         ) from exc
-    except Exception as exc:
+    except (yt_dlp.utils.ExtractorError, OSError, ValueError) as exc:
         raise RuntimeError(
             f"Unexpected error during download of '{validated_url}': {exc}"
         ) from exc
@@ -371,7 +584,17 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
     if entries is not None:
         # Playlist or channel — iterate all entries
         raw_entries = list(entries)  # may be a generator
-        logger.info("Playlist/channel detected: %d entries found.", len(raw_entries))
+        num_downloaded = len(raw_entries)
+        num_skipped = total_videos - num_downloaded
+        if num_skipped > 0:
+            logger.info(
+                "Downloaded %d new video(s), skipped %d already-downloaded video(s) (total: %d).",
+                num_downloaded,
+                num_skipped,
+                total_videos
+            )
+        else:
+            logger.info("Downloaded %d video(s).", num_downloaded)
         for entry in raw_entries:
             if entry is None:
                 continue
@@ -383,20 +606,78 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
         # objects for the files that are already present.
         if not downloaded_infos:
             logger.info(
-                "All entries skipped by download archive — re-fetching metadata "
-                "without downloading to build episode list from existing files."
+                "All entries skipped by download archive — checking metadata cache "
+                "to build episode list from existing files."
             )
-            meta_opts = {k: v for k, v in ydl_opts.items() if k != "download_archive"}
-            meta_opts["logger"] = ydl_opts["logger"]
-            try:
-                with yt_dlp.YoutubeDL(meta_opts) as ydl_meta:
-                    meta_info = ydl_meta.extract_info(validated_url, download=False)
-                if meta_info:
-                    for entry in (meta_info.get("entries") or []):
-                        if entry is not None:
-                            downloaded_infos.append(entry)
-            except Exception as exc:
-                logger.warning("Metadata-only fetch failed: %s", exc)
+
+            # Try to build episode list from cache first
+            cache_hits = 0
+            cache_misses = []
+
+            # Get list of all .mp3 files in audio directory
+            mp3_files = list(audio_dir.glob("*.mp3"))
+            total_cached_videos = len(mp3_files)
+
+            for idx, mp3_file in enumerate(mp3_files, 1):
+                video_id = mp3_file.stem  # filename without extension
+
+                if video_id in metadata_cache:
+                    # Use cached metadata
+                    cached = metadata_cache[video_id]
+                    duration = cached.get("duration", 0) or 0
+
+                    # Call progress callback when loading from cache
+                    if progress_callback:
+                        progress_callback(
+                            idx / total_cached_videos, idx, total_cached_videos, duration
+                        )
+
+                    # Create a minimal info dict that _info_to_episode can process
+                    info_dict = {
+                        "id": video_id,
+                        "title": cached.get("title", "Unknown"),
+                        "upload_date": cached.get("upload_date", ""),
+                        "description": cached.get("description", ""),
+                        "webpage_url": cached.get("url", ""),
+                        "channel": cached.get("channel", cached.get("uploader", "")),
+                        "uploader": cached.get("uploader", ""),
+                    }
+                    downloaded_infos.append(info_dict)
+                    cache_hits += 1
+                else:
+                    cache_misses.append(video_id)
+
+            if cache_hits > 0:
+                logger.info("Using cached metadata for %d video(s).", cache_hits)
+
+            # If we have cache misses, fetch only those from YouTube
+            if cache_misses:
+                logger.info(
+                    "Metadata not in cache for %d video(s), fetching from YouTube.",
+                    len(cache_misses)
+                )
+                meta_opts = {k: v for k, v in ydl_opts.items() if k != "download_archive"}
+                meta_opts["logger"] = ydl_opts["logger"]
+                try:
+                    with yt_dlp.YoutubeDL(meta_opts) as ydl_meta:
+                        meta_info = ydl_meta.extract_info(validated_url, download=False)
+                    if meta_info:
+                        for entry in (meta_info.get("entries") or []):
+                            if entry is not None:
+                                entry_id = entry.get("id")
+                                if entry_id in cache_misses:
+                                    downloaded_infos.append(entry)
+                                    # Cache the newly fetched metadata
+                                    try:
+                                        validated_entry_id = validate_video_id(entry_id)
+                                        metadata_cache[validated_entry_id] = (
+                                            _extract_metadata_from_info(entry)
+                                        )
+                                        cache_modified = True
+                                    except ValueError:
+                                        pass
+                except (yt_dlp.utils.DownloadError, yt_dlp.utils.ExtractorError) as exc:
+                    logger.warning("Metadata-only fetch failed: %s", exc)
     else:
         # Single video
         downloaded_infos.append(info)
@@ -419,8 +700,13 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
 
     if not episodes and errors:
         raise RuntimeError(
-            f"All downloads failed. Errors:\n" + "\n".join(errors)
+            "All downloads failed. Errors:\n" + "\n".join(errors)
         )
+
+    # Save metadata cache if it was modified
+    if cache_modified:
+        _save_metadata_cache(audio_dir, metadata_cache)
+        logger.debug("Metadata cache updated with new entries.")
 
     logger.info(
         "Acquisition complete: %d episode(s) ready, %d error(s).",
@@ -429,3 +715,4 @@ def download_episode(url: str, audio_dir: Path | None = None) -> list[EpisodeAud
     )
     return episodes
 
+# Made with Bob

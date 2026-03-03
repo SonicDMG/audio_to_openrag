@@ -264,10 +264,10 @@ async def _ingest(md_path: Path, filter_name: str = "Videos") -> str:
         base_url=os.environ.get("OPENRAG_URL", "http://localhost:3000"),
     )
     result = await client.documents.ingest(file_path=str(md_path))
-    
+
     # Update knowledge filter to include this document
     await _ensure_podcast_filter(client, md_path.name, filter_name)
-    
+
     return result.document_id
 
 def ingest_transcript(md_path: Path, filter_name: str = "Videos") -> str:

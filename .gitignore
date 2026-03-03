@@ -58,6 +58,9 @@ transcripts/
 state.json
 # Temporary atomic-write files created by state.py
 *.tmp
+# Video metadata cache (local cache; re-fetchable from YouTube)
+.video_metadata.json
+.video_metadata.json.tmp
 
 # =============================================================================
 # ML model caches (large binary files; downloaded on first run)

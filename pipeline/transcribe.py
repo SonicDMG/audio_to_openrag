@@ -55,12 +55,12 @@ class TranscriptResult:
 
 class _ProgressTracker:
     """Thread-safe progress tracker for simulating transcription progress.
-    
+
     Since Docling's DocumentConverter doesn't provide progress callbacks,
     this class simulates smooth progress updates based on elapsed time and
     estimated audio duration.
     """
-    
+
     def __init__(self, callback: Callable[[float], None] | None, audio_path: Path):
         self.callback = callback
         self.audio_path = audio_path
@@ -68,28 +68,28 @@ class _ProgressTracker:
         self.thread: threading.Thread | None = None
         self.current_progress = 0.0
         self._lock = threading.Lock()
-        
+
     def start(self) -> None:
         """Start the progress tracking thread."""
         if not self.callback:
             return
-            
+
         # Signal start
         self.callback(0.0)
-        
+
         # Start background thread for progress updates
         self.thread = threading.Thread(target=self._update_progress, daemon=True)
         self.thread.start()
-        
+
     def stop(self) -> None:
         """Stop the progress tracking thread and signal completion."""
         if self.thread:
             self.stop_event.set()
             self.thread.join(timeout=1.0)
-            
+
         if self.callback:
             self.callback(1.0)
-            
+
     def _get_audio_duration(self) -> float:
         """Estimate audio duration in seconds using ffprobe if available."""
         try:
@@ -105,7 +105,7 @@ class _ProgressTracker:
                 return float(result.stdout.strip())
         except (FileNotFoundError, ValueError, subprocess.TimeoutExpired):
             pass
-        
+
         # Fallback: estimate based on file size (rough approximation)
         # Assume ~1MB per minute for typical audio files
         try:
@@ -114,26 +114,26 @@ class _ProgressTracker:
         except (FileNotFoundError, OSError):
             # If file doesn't exist or can't be accessed, use a default estimate
             return 300.0  # 5 minutes default
-        
+
     def _update_progress(self) -> None:
         """Background thread that updates progress based on elapsed time."""
         start_time = time.time()
         estimated_duration = self._get_audio_duration()
-        
+
         # Transcription typically takes 0.1-0.3x of audio duration with whisper-turbo
         # Use a conservative estimate of 0.25x (4x real-time speed)
         estimated_transcription_time = estimated_duration * 0.25
-        
+
         # Cap minimum time at 5 seconds to avoid too-fast progress
         estimated_transcription_time = max(estimated_transcription_time, 5.0)
-        
+
         while not self.stop_event.is_set():
             elapsed = time.time() - start_time
-            
+
             # Use a sigmoid-like curve for smooth progress
             # Progress accelerates initially, then slows as it approaches completion
             raw_progress = elapsed / estimated_transcription_time
-            
+
             # Apply easing function: fast start, slow finish (stays under 95% until done)
             if raw_progress < 0.5:
                 # First half: accelerate to 50%
@@ -141,16 +141,16 @@ class _ProgressTracker:
             else:
                 # Second half: slow down, asymptotically approach 95%
                 progress = 0.5 + (raw_progress - 0.5) * 0.9
-                
+
             # Cap at 95% until actual completion
             progress = min(progress, 0.95)
-            
+
             with self._lock:
                 self.current_progress = progress
-                
+
             if self.callback:
                 self.callback(progress)
-                
+
             # Update every 0.5 seconds for smooth visual feedback
             self.stop_event.wait(0.5)
 
@@ -252,7 +252,7 @@ def transcribe_audio(
     except Exception as exc:
         # Ensure progress tracker is stopped on error
         progress_tracker.stop()
-        
+
         logger.error(
             "Docling transcription failed for '%s': %s",
             audio_path.name,

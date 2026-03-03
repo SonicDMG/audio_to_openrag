@@ -32,7 +32,14 @@ import click
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from pipeline import acquire, config, document, state, transcribe
@@ -112,6 +119,31 @@ def _check_ffmpeg() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Duration formatting helper
+# ---------------------------------------------------------------------------
+
+
+def format_duration(seconds: int) -> str:
+    """Format duration in seconds to MM:SS or H:MM:SS format.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        Formatted duration string (e.g., "5:23" or "1:32:45").
+        Returns "0:00" for invalid/zero durations.
+    """
+    if seconds <= 0:
+        return "0:00"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+# ---------------------------------------------------------------------------
 # Plain-transcript helper (used when diarization is skipped)
 # ---------------------------------------------------------------------------
 
@@ -185,7 +217,7 @@ def ingest(url: str, force: bool, dry_run: bool, filter_name: str) -> None:
     """Download, transcribe, and ingest a YouTube episode or playlist.
 
     URL can be a single video, a playlist, or a channel URL.
-    
+
     Transcripts are produced without speaker labels using Docling's AsrPipeline.
     """
     log = logging.getLogger(__name__)
@@ -210,12 +242,57 @@ def ingest(url: str, force: bool, dry_run: bool, filter_name: str) -> None:
     # -----------------------------------------------------------------------
     console.rule("[bold blue]Stage 1 — Acquire")
     display_logo(console, "youtube", "Downloading from YouTube")
-    try:
-        episodes = acquire.download_episode(url, audio_dir=audio_dir)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    except RuntimeError as exc:
-        raise click.ClickException(f"Download failed: {exc}") from exc
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        download_task = progress.add_task("Processing audio…", total=100)
+
+        def update_download_progress(pct: float, current: int, total: int, duration: int) -> None:
+            # Format duration string if available
+            duration_str = ""
+            if duration > 0:
+                duration_str = f" ({format_duration(duration)})"
+
+            # Show video count for playlists (total > 1)
+            if total > 1:
+                # Pad numbers to ensure consistent width for double/triple digits
+                width = len(str(total))
+                progress.update(
+                    download_task,
+                    completed=pct * 100,
+                    description=f"Processing video {current:>{width}}/{total}{duration_str}…"
+                )
+            else:
+                # Single video - show duration but not count
+                progress.update(
+                    download_task,
+                    completed=pct * 100,
+                    description=f"Processing audio{duration_str}…"
+                )
+
+        try:
+            episodes = acquire.download_episode(
+                url,
+                audio_dir=audio_dir,
+                progress_callback=update_download_progress,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except RuntimeError as exc:
+            raise click.ClickException(f"Download failed: {exc}") from exc
+
+        # Update description to show completion
+        progress.update(
+            download_task,
+            description="[green]✓ Download complete[/green]",
+            completed=100,
+        )
 
     total = len(episodes)
     console.print(f"[green]Found {total} episode(s) to process.[/green]")
@@ -329,6 +406,12 @@ def _process_episode(
 
     # Stage 2: Transcription only (diarization is skipped)
     display_logo(console, "docling", "Transcribing with Docling ASR")
+
+    # Format duration for display
+    duration_str = ""
+    if episode.duration > 0:
+        duration_str = f" ({format_duration(episode.duration)})"
+
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -336,7 +419,7 @@ def _process_episode(
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        transcribe_task = progress.add_task("Transcribing audio…", total=100)
+        transcribe_task = progress.add_task(f"Transcribing audio{duration_str}…", total=100)
 
         def update_transcribe_progress(pct: float) -> None:
             progress.update(transcribe_task, completed=pct * 100)
@@ -350,7 +433,7 @@ def _process_episode(
         model_info = getattr(transcript_result, "model_info", "")
         progress.update(
             transcribe_task,
-            description=f"[green]✓ Transcription complete[/green] ({model_info})",
+            description=f"[green]✓ Transcription complete[/green] ({model_info}){duration_str}",
             completed=100,
         )
 
