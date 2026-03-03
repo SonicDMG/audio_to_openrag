@@ -51,7 +51,7 @@ _CHANNEL_PATH_PATTERN = re.compile(
 
 @dataclass
 class EpisodeAudio:
-    """Metadata and local audio path for a single downloaded podcast episode.
+    """Metadata and local media path for a single downloaded podcast episode.
 
     Attributes:
         video_id:    YouTube video ID (idempotency key, filesystem-safe).
@@ -61,7 +61,9 @@ class EpisodeAudio:
         webpage_url: Canonical YouTube watch URL.
         channel:     Channel name.
         duration:    Video duration in seconds (0 if unavailable).
-        audio_path:  Absolute path to the downloaded .mp3 file on disk.
+        audio_path:  Absolute path to the downloaded media file on disk.
+                     Note: Despite the name, this can be a video file (.mp4, .webm, etc.)
+                     since Docling's ASR pipeline can extract audio from video directly.
     """
 
     video_id: str
@@ -165,32 +167,28 @@ def _build_ydl_opts(audio_dir: Path) -> dict:
     """Build the yt-dlp options dictionary.
 
     Args:
-        audio_dir: Directory where downloaded audio files will be saved.
+        audio_dir: Directory where downloaded video files will be saved.
 
     Returns:
         Dictionary of yt-dlp options.
+    
+    Note:
+        Docling's ASR pipeline can process video files directly, so we don't
+        need FFmpeg to extract audio separately. This simplifies the pipeline
+        and reduces processing time by eliminating the audio extraction step.
     """
     return {
-        "format": "bestaudio/best",
+        # Download full video - Docling extracts audio internally
+        "format": "best",
         # Name files by video ID to keep paths predictable and filesystem-safe
         "outtmpl": str(audio_dir / "%(id)s.%(ext)s"),
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
         # Prevent yt-dlp from printing progress to stdout
         "noprogress": True,
         # Persist a download archive so yt-dlp skips videos it has already
-        # fetched on subsequent runs. yt-dlp's built-in "file exists" check
-        # looks for the pre-conversion container (e.g. .webm); after
-        # FFmpegExtractAudio converts it to .mp3 the container is deleted, so
-        # without an archive every re-run would re-download all videos.
+        # fetched on subsequent runs.
         "download_archive": str(audio_dir / ".yt_dlp_archive"),
     }
 
@@ -272,27 +270,59 @@ def _info_to_episode(info: dict, audio_dir: Path) -> EpisodeAudio:
 
     Args:
         info:      yt-dlp info dict for a single video entry.
-        audio_dir: Directory where the audio file was saved.
+        audio_dir: Directory where the media file was saved.
 
     Returns:
         Populated :class:`EpisodeAudio` dataclass.
 
     Raises:
         ValueError: If the video ID is missing or contains unsafe characters.
-        RuntimeError: If the expected .mp3 file does not exist on disk.
+        RuntimeError: If the expected media file does not exist on disk.
     """
     raw_id = info.get("id", "")
     if not raw_id:
         raise ValueError("yt-dlp returned an entry with no video ID.")
 
     video_id = validate_video_id(raw_id)
-    audio_path = audio_dir / f"{video_id}.mp3"
-
-    if not audio_path.exists():
+    
+    # Find the actual downloaded file - could be .mp4, .webm, .mkv, etc.
+    # yt-dlp names files as {video_id}.{ext} where ext depends on the format
+    media_files = list(audio_dir.glob(f"{video_id}.*"))
+    
+    # Filter out metadata files and archives
+    media_files = [
+        f for f in media_files
+        if f.suffix.lower() not in {'.json', '.txt', '.part', '.ytdl', '.tmp'}
+    ]
+    
+    if not media_files:
         raise RuntimeError(
-            f"Expected audio file not found after download: {audio_path.name}. "
-            "Ensure ffmpeg is installed and available on PATH."
+            f"Expected media file not found after download: {video_id}.* "
+            f"No video or audio file found in {audio_dir}"
         )
+    
+    if len(media_files) > 1:
+        # Multiple files found - prefer video formats, then audio formats
+        video_exts = {'.mp4', '.webm', '.mkv', '.avi', '.mov'}
+        audio_exts = {'.mp3', '.m4a', '.opus', '.ogg', '.wav'}
+        
+        video_files = [f for f in media_files if f.suffix.lower() in video_exts]
+        audio_files = [f for f in media_files if f.suffix.lower() in audio_exts]
+        
+        if video_files:
+            media_path = video_files[0]
+        elif audio_files:
+            media_path = audio_files[0]
+        else:
+            media_path = media_files[0]
+        
+        logger.debug(
+            "Multiple files found for video_id %s, selected: %s",
+            video_id,
+            media_path.name
+        )
+    else:
+        media_path = media_files[0]
 
     return EpisodeAudio(
         video_id=video_id,
@@ -302,7 +332,7 @@ def _info_to_episode(info: dict, audio_dir: Path) -> EpisodeAudio:
         webpage_url=info.get("webpage_url", info.get("original_url", "")),
         channel=info.get("channel", info.get("uploader", "")),
         duration=info.get("duration", 0) or 0,
-        audio_path=audio_path,
+        audio_path=media_path,
     )
 
 
@@ -316,18 +346,20 @@ def download_episode(
     audio_dir: Path | None = None,
     progress_callback: Callable[[float, int, int, int], None] | None = None,
 ) -> list[EpisodeAudio]:
-    """Download audio from a YouTube URL and return episode metadata.
+    """Download media from a YouTube URL and return episode metadata.
 
     Accepts single video URLs, playlist URLs, and channel URLs. For playlists
     and channels, all available videos are downloaded and returned.
 
-    The function uses the yt-dlp Python API (not subprocess) to download audio
-    as 192 kbps MP3 files. Files are named ``{video_id}.mp3`` to keep paths
-    predictable and filesystem-safe.
+    The function uses the yt-dlp Python API (not subprocess) to download video
+    files in their best available format. Files are named ``{video_id}.{ext}``
+    to keep paths predictable and filesystem-safe. Docling's ASR pipeline can
+    extract audio from video files directly, so no separate audio extraction
+    is needed.
 
     Args:
         url:              YouTube video, playlist, or channel URL.
-        audio_dir:        Directory to save downloaded audio files. Defaults to the
+        audio_dir:        Directory to save downloaded media files. Defaults to the
                           ``AUDIO_DIR`` environment variable, or ``./audio`` if unset.
         progress_callback: Optional callback function that receives download progress
                           as (percentage: float, current_video: int, total_videos: int,
@@ -372,13 +404,20 @@ def download_episode(
     if video_id:
         try:
             video_id = validate_video_id(video_id)
-            audio_path = audio_dir / f"{video_id}.mp3"
-
-            if audio_path.exists():
+            
+            # Check if any media file exists for this video_id
+            existing_files = list(audio_dir.glob(f"{video_id}.*"))
+            existing_files = [
+                f for f in existing_files
+                if f.suffix.lower() not in {'.json', '.txt', '.part', '.ytdl', '.tmp'}
+            ]
+            
+            if existing_files:
+                media_path = existing_files[0]
                 logger.info(
                     "File already exists for video ID %s, skipping download: %s",
                     video_id,
-                    audio_path.name
+                    media_path.name
                 )
 
                 # Try to use cached metadata first
@@ -393,7 +432,7 @@ def download_episode(
                         webpage_url=cached.get("url", validated_url),
                         channel=cached.get("channel", cached.get("uploader", "")),
                         duration=cached.get("duration", 0) or 0,
-                        audio_path=audio_path,
+                        audio_path=media_path,
                     )
                     logger.info(
                         "Episode ready (cached metadata): video_id=%s title=%r duration=%ds",
@@ -614,12 +653,16 @@ def download_episode(
             cache_hits = 0
             cache_misses = []
 
-            # Get list of all .mp3 files in audio directory
-            mp3_files = list(audio_dir.glob("*.mp3"))
-            total_cached_videos = len(mp3_files)
+            # Get list of all media files in audio directory (excluding metadata files)
+            all_files = list(audio_dir.glob("*.*"))
+            media_files = [
+                f for f in all_files
+                if f.suffix.lower() not in {'.json', '.txt', '.part', '.ytdl', '.tmp'}
+            ]
+            total_cached_videos = len(media_files)
 
-            for idx, mp3_file in enumerate(mp3_files, 1):
-                video_id = mp3_file.stem  # filename without extension
+            for idx, media_file in enumerate(media_files, 1):
+                video_id = media_file.stem  # filename without extension
 
                 if video_id in metadata_cache:
                     # Use cached metadata

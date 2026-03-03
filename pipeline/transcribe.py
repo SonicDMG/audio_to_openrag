@@ -24,7 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from rich.console import Console
+
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +227,15 @@ def transcribe_audio(
         }
     )
 
+    # Log Docling components being used with rich markup for proper color rendering
+    console.print("\n[bold cyan]Docling components in use:[/bold cyan]")
+    console.print("  [green]•[/green] [bold]DocumentConverter[/bold] (audio format handling)")
+    console.print("  [green]•[/green] [bold]AsrPipeline[/bold] (speech-to-text transcription)")
+    console.print("  [green]•[/green] [bold]WHISPER_TURBO[/bold] model (fast multilingual ASR)")
+    console.print("  [green]•[/green] [bold]TrackSource[/bold] (timestamp preservation)")
+    console.print("  [green]•[/green] [bold]HierarchicalChunker[/bold] (default semantic chunking)")
+    console.print()  # Add blank line for separation
+
     logger.info("Running Docling DocumentConverter with AsrPipeline (whisper-turbo)…")
 
     try:
@@ -234,6 +246,35 @@ def transcribe_audio(
         # full absolute path through to the MLX/Whisper ffmpeg call.
         result = converter.convert(audio_path)
         document = result.document
+
+        # Check for timestamp data in the document
+        timestamps_found = False
+        segment_count = 0
+
+        if hasattr(document, 'texts'):
+            for text_item in document.texts:
+                if hasattr(text_item, 'source'):
+                    source = text_item.source
+                    # Check if source is a list with TrackSource items
+                    if isinstance(source, list):
+                        for item in source:
+                            if hasattr(item, 'start_time') or hasattr(item, 'start'):
+                                timestamps_found = True
+                                segment_count += 1
+                                break
+                    # Check if source itself has timestamps
+                    elif hasattr(source, 'start') or hasattr(source, 'start_time'):
+                        timestamps_found = True
+                        segment_count += 1
+
+        if timestamps_found:
+            # Using rich console for colored output
+            console.print(
+                f"[bold]Timestamps found:[/bold] [green]True[/green] "
+                f"([yellow]{segment_count}[/yellow] segments with timing data)"
+            )
+        else:
+            console.print("[bold]Timestamps found:[/bold] [yellow]False[/yellow]")
 
         # Export to markdown
         markdown = document.export_to_markdown()
@@ -259,5 +300,4 @@ def transcribe_audio(
             exc,
         )
         raise RuntimeError(f"Docling transcription failed: {exc}") from exc
-
 

@@ -257,12 +257,25 @@ async def _ingest_async(
                 result.status if isinstance(result, IngestTaskStatus) else "completed"
             )
 
-            if isinstance(result, IngestTaskStatus) and result.status == "failed":
-                failed_files = result.failed_files
-                raise RuntimeError(
-                    f"OpenRAG ingestion task failed (task_id={task_id}, "
-                    f"failed_files={failed_files})."
-                )
+            # Validate ingestion status with positive validation
+            if isinstance(result, IngestTaskStatus):
+                if result.status == "failed":
+                    failed_files = result.failed_files
+                    raise RuntimeError(
+                        f"OpenRAG ingestion task failed (task_id={task_id}, "
+                        f"failed_files={failed_files})."
+                    )
+                elif result.status != "completed":
+                    raise RuntimeError(
+                        f"OpenRAG ingestion task did not complete successfully "
+                        f"(task_id={task_id}, status={result.status})."
+                    )
+                # Verify files were actually processed
+                if not result.processed_files:
+                    raise RuntimeError(
+                        f"OpenRAG ingestion task completed but no files were processed "
+                        f"(task_id={task_id})."
+                    )
 
             logger.info(
                 "✅ Document successfully sent to OpenRAG: "
@@ -297,10 +310,11 @@ async def _ingest_async(
                     exc,
                 )
 
+            # Only return success if task completed successfully
             return IngestResult(
                 document_id=task_id,
                 filename=filename,
-                status="success",
+                status="success" if task_status == "completed" else "failed",
                 filter_id=filter_id,
             )
 

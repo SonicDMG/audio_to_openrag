@@ -50,7 +50,11 @@ from pipeline.state import _atomic_write
 from pipeline.utils import ensure_ffmpeg_on_path, validate_video_id
 
 if TYPE_CHECKING:
+    from docling_core.types.doc.document import DoclingDocument, TrackSource
     from pipeline.acquire import EpisodeAudio
+else:
+    # Import at runtime for actual use
+    from docling_core.types.doc.document import TrackSource
 
 # Load .env before anything else so env vars are available to all imports
 load_dotenv()
@@ -151,22 +155,79 @@ def format_duration(seconds: int) -> str:
 def _build_plain_segments_from_markdown(
     markdown: str,
     diarized_segment_cls: type,
+    docling_document: DoclingDocument | None = None,
 ) -> list:
     """Build a list of DiarizedSegment objects from markdown text.
 
-    Used when diarization is skipped. The entire markdown text is wrapped
-    in a single DiarizedSegment with ``speaker_label=""`` so that
-    ``document.py`` renders the text without a speaker prefix.
+    Used when diarization is skipped. Extracts timestamps from the
+    DoclingDocument's text items if available, otherwise creates a single
+    segment with dummy timestamps.
 
     Args:
         markdown:              Markdown text from transcription.
         diarized_segment_cls:  The DiarizedSegment dataclass.
+        docling_document:      Optional DoclingDocument with timestamp info.
 
     Returns:
-        List containing a single DiarizedSegment (or empty if no text).
+        List of DiarizedSegment objects with timestamps (or empty if no text).
     """
-    if markdown.strip():
-        return [
+    if not markdown.strip():
+        return []
+
+    # Try to extract timestamps from DoclingDocument
+    segments = []
+    if docling_document and hasattr(docling_document, 'texts'):
+        for text_item in docling_document.texts:
+            # Check if this text item has a source attribute
+            if hasattr(text_item, 'source'):
+                source = text_item.source
+                text_content = getattr(text_item, 'text', '').strip()
+
+                if not text_content:
+                    continue
+
+                # Handle case where source is a list of TrackSource objects
+                if isinstance(source, list):
+                    for track_source in source:
+                        # Check if it's a TrackSource with timestamps
+                        if (hasattr(track_source, 'start_time') and
+                                hasattr(track_source, 'end_time')):
+                            start_time = getattr(track_source, 'start_time', 0.0)
+                            end_time = getattr(track_source, 'end_time', 0.0)
+
+                            segments.append(
+                                diarized_segment_cls(
+                                    speaker_label="",
+                                    start=start_time,
+                                    end=end_time,
+                                    text=text_content,
+                                )
+                            )
+                            # Only use the first TrackSource from the list
+                            break
+                # Handle case where source is a TrackSource directly (fallback)
+                elif isinstance(source, TrackSource):
+                    if hasattr(source, 'start_time') and hasattr(source, 'end_time'):
+                        start_time = getattr(source, 'start_time', 0.0)
+                        end_time = getattr(source, 'end_time', 0.0)
+                    elif hasattr(source, 'start') and hasattr(source, 'end'):
+                        start_time = getattr(source, 'start', 0.0)
+                        end_time = getattr(source, 'end', 0.0)
+                    else:
+                        continue
+
+                    segments.append(
+                        diarized_segment_cls(
+                            speaker_label="",
+                            start=start_time,
+                            end=end_time,
+                            text=text_content,
+                        )
+                    )
+
+    # Fallback: if no segments extracted, create single segment with dummy timestamps
+    if not segments:
+        segments = [
             diarized_segment_cls(
                 speaker_label="",
                 start=0.0,
@@ -174,7 +235,8 @@ def _build_plain_segments_from_markdown(
                 text=markdown.strip(),
             )
         ]
-    return []
+
+    return segments
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +400,6 @@ def ingest(url: str, force: bool, dry_run: bool, filter_name: str) -> None:
                     dry_run=dry_run,
                     filter_name=filter_name,
                     transcribe_mod=transcribe,
-                    document_mod=document,
                     ingest_module=ingest_mod,
                     state_mod=state,
                 )
@@ -382,7 +443,6 @@ def _process_episode(
     dry_run: bool,
     filter_name: str,
     transcribe_mod: object,
-    document_mod: object,
     ingest_module: object,
     state_mod: object,
 ) -> None:
@@ -439,11 +499,14 @@ def _process_episode(
 
     log.info("Diarization skipped — building plain transcript without speaker labels.")
 
-    # Build plain segments from markdown
+    # Build plain segments from markdown and extract DoclingDocument
     markdown = getattr(transcript_result, "markdown", "")
-    diarized_segments = _build_plain_segments_from_markdown(markdown, DiarizedSegment)
+    docling_document = getattr(transcript_result, "document", None)
+    diarized_segments = _build_plain_segments_from_markdown(
+        markdown, DiarizedSegment, docling_document
+    )
 
-    # Stage 4: Build document
+    # Stage 4: Build document with DoclingDocument (exports to both DocTags and Markdown)
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -452,21 +515,25 @@ def _process_episode(
         console=console,
     ) as progress:
         task = progress.add_task(
-            "Building transcript document… (Docling Markdown parser)",
+            "Building transcript document… (DocTags + Markdown export)",
             total=None
         )
-        md_path, _ = document_mod.build_transcript_document(  # type: ignore[union-attr]
-            episode=episode,
-            segments=diarized_segments,
-            transcripts_dir=transcripts_dir,
+        doctags_path, md_path, docling_document = (
+            document.build_transcript_document(
+                episode=episode,
+                segments=diarized_segments,
+                docling_document=docling_document,
+                transcripts_dir=transcripts_dir,
+            )
         )
         progress.update(
             task,
-            description="[green]✓ Document built[/green] (Docling Markdown parser)",
+            description="[green]✓ Document built[/green] (DocTags + Markdown export)",
             completed=True
         )
 
-    console.print(f"  [dim]Transcript:[/dim] {md_path.name}")
+    console.print(f"  [dim]DocTags (for reference):[/dim] {doctags_path.name}")
+    console.print(f"  [dim]Markdown (for OpenRAG):[/dim] {md_path.name}")
 
     # Stage 5: Ingest (unless --dry-run)
     openrag_document_id: str | None = None
@@ -484,11 +551,11 @@ def _process_episode(
             console=console,
         ) as progress:
             task = progress.add_task(
-                f"Uploading to OpenRAG ({openrag_url})…",
+                f"Uploading Markdown to OpenRAG ({openrag_url})…",
                 total=None
             )
             ingest_result = ingest_module.ingest_transcript(  # type: ignore[union-attr]
-                transcript_path=md_path,
+                transcript_path=md_path,  # Use Markdown format for OpenRAG compatibility
                 force=force,
                 filter_name=filter_name,
             )
@@ -504,6 +571,7 @@ def _process_episode(
                 f"  [bold green]✓ Document sent to OpenRAG[/bold green]\n"
                 f"    [dim]URL:[/dim] {openrag_url}\n"
                 f"    [dim]Task ID:[/dim] {openrag_document_id}\n"
+                f"    [dim]Format:[/dim] Markdown\n"
                 f"    [dim]File:[/dim] {md_path.name}"
             )
         elif ingest_result.status == "already_exists":
@@ -517,10 +585,10 @@ def _process_episode(
                 f"OpenRAG ingestion failed: {ingest_result.error}"
             )
 
-    # Stage 6: Update state
+    # Stage 6: Update state (use md_path for state tracking)
     state_mod.mark_ingested(  # type: ignore[union-attr]
         episode=episode,
-        transcript_path=md_path,
+        transcript_path=md_path,  # Track Markdown file in state
         openrag_document_id=openrag_document_id,
         state_file=state_file,
     )

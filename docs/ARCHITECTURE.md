@@ -1,8 +1,8 @@
 # The Flow Pipeline — Technical Architecture & Project Specification
 
-> **Version:** 1.0.0
-> **Last Updated:** 2026-02-27
-> **Status:** Draft — Pending Implementation Review
+> **Version:** 1.1.0
+> **Last Updated:** 2026-03-03
+> **Status:** Production — Docling-Based Architecture
 > **Project Root:** `~/audio_to_openrag/`
 
 ---
@@ -31,11 +31,13 @@
 
 Given a YouTube video URL or playlist/channel URL, the pipeline:
 
-1. **Downloads** the episode audio as a high-quality `.mp3` using `yt-dlp`, extracting structured metadata (title, upload date, video ID, description, canonical URL).
-2. **Transcribes** the audio locally using Docling's ASR pipeline backed by OpenAI Whisper Turbo — producing timestamped transcript text without sending audio to any external API.
-3. **Constructs** a structured `DoclingDocument` from the transcript, preserving episode metadata.
-4. **Exports** the document to a local Markdown (`.md`) file in the `transcripts/` directory.
-5. **Ingests** the Markdown transcript into the self-hosted OpenRAG instance via the async `openrag-sdk`, enabling semantic search and RAG-powered Q&A over all podcast content.
+1. **Downloads** the episode video using `yt-dlp`, extracting structured metadata (title, upload date, video ID, description, canonical URL).
+2. **Transcribes** the video locally using Docling's ASR pipeline backed by OpenAI Whisper Turbo — Docling extracts audio from video internally, producing a structured `DoclingDocument` without sending data to any external API.
+3. **Preserves** the `DoclingDocument` throughout the pipeline, maintaining document structure and metadata.
+4. **Exports** the document in **dual formats**:
+   - **DocTags** (`.doctags`) — Docling's structure-preserving format optimized for RAG ingestion
+   - **Markdown** (`.md`) — Human-readable format for reference and review
+5. **Ingests** the DocTags file into the self-hosted OpenRAG instance via the async `openrag-sdk`, enabling semantic search and RAG-powered Q&A with preserved document structure.
 6. **Tracks** ingested episodes in a local `state.json` file keyed by YouTube video ID to prevent duplicate ingestion (idempotency). A `--force` flag overrides this check.
 
 ### What It Does NOT Do
@@ -45,13 +47,16 @@ Given a YouTube video URL or playlist/channel URL, the pipeline:
 - It does not modify or re-upload content to YouTube, Spotify, or Apple Podcasts.
 - It does not perform real-time or live-stream ingestion.
 - It does not include speaker identification or diarization.
+- It does not require FFmpeg for audio extraction (Docling handles video files directly).
 
 ### Deployment Context
 
 The pipeline runs as a local CLI tool on the user's macOS machine. The only external network calls are:
-- **Outbound to YouTube** via `yt-dlp` (audio download)
+- **Outbound to YouTube** via `yt-dlp` (video download)
 - **Outbound to `localhost:3000`** (self-hosted OpenRAG Docker container)
 - **Outbound to OpenAI API** for embedding generation via OpenRAG's configured `text-embedding-3-small` model
+
+All transcription happens locally via Docling's ASR pipeline. Video files are processed directly without intermediate audio extraction.
 
 ---
 
@@ -65,30 +70,30 @@ flowchart TD
     STATE_CHECK -- No OR --force flag --> ACQ
 
     subgraph STAGE_1 [Stage 1: Acquire]
-        ACQ[acquire.py\nyt-dlp YoutubeDL\nDownload .mp3 + metadata]
+        ACQ[acquire.py\nyt-dlp YoutubeDL\nDownload video + metadata]
     end
 
     subgraph STAGE_2 [Stage 2: Transcribe]
-        TRANS[transcribe.py\nDocling DocumentConverter\nAsrPipeline + WHISPER_TURBO\nTimestamped transcript]
+        TRANS[transcribe.py\nDocling DocumentConverter\nAsrPipeline + WHISPER_TURBO\nProduces DoclingDocument]
     end
 
-    subgraph STAGE_3 [Stage 3: Build Document]
-        DOC[document.py\nBuild DoclingDocument\nExport to .md]
+    subgraph STAGE_3 [Stage 3: Export Document]
+        DOC[document.py\nPreserve DoclingDocument\nDual Export:\nDocTags + Markdown]
     end
 
     subgraph STAGE_4 [Stage 4: Ingest and Track]
-        INGEST[ingest.py\nopenrag-sdk async\nclient.documents.ingest\nfile_path=transcript.md]
+        INGEST[ingest.py\nopenrag-sdk async\nclient.documents.ingest\nfile_path=transcript.doctags]
         STATE_WRITE[state.py\nWrite video_id entry\nto state.json atomically]
     end
 
-    ACQ -->|.mp3 file path + metadata dict| TRANS
-    TRANS -->|Transcript text| DOC
-    DOC -->|transcripts/video-id.md| INGEST
-    INGEST -->|openrag document_id| STATE_WRITE
+    ACQ -->|video file path + metadata dict| TRANS
+    TRANS -->|DoclingDocument preserved| DOC
+    DOC -->|transcripts/video-id.doctags\ntranscripts/video-id.md| INGEST
+    INGEST -->|openrag task_id| STATE_WRITE
     STATE_WRITE --> DONE[Done]
 
-    EXT_YT[(YouTube\nyt-dlp HTTP)] -.->|audio stream| ACQ
-    EXT_OR[(OpenRAG\nlocalhost:3000\ntext-embedding-3-small)] -.->|HTTP POST multipart| INGEST
+    EXT_YT[(YouTube\nyt-dlp HTTP)] -.->|video stream| ACQ
+    EXT_OR[(OpenRAG\nlocalhost:3000\ntext-embedding-3-small)] -.->|HTTP POST multipart\nDocTags format| INGEST
 ```
 
 ### Stage Summary Table
@@ -96,26 +101,27 @@ flowchart TD
 | # | Stage | Module | Primary Input | Primary Output |
 |---|-------|--------|---------------|----------------|
 | 0 | State Check | `state.py` | YouTube video ID | Skip or proceed decision |
-| 1 | Acquire | `acquire.py` | YouTube URL | `.mp3` path + `EpisodeMetadata` |
-| 2 | Transcribe | `transcribe.py` | `.mp3` path | Transcript text |
-| 3 | Build Document | `document.py` | Transcript + metadata | `DoclingDocument` + `.md` file |
-| 4 | Ingest | `ingest.py` | `.md` file path | OpenRAG `document_id` |
-| 5 | Track State | `state.py` | video ID + `document_id` | Updated `state.json` |
+| 1 | Acquire | `acquire.py` | YouTube URL | Video file path + `EpisodeMetadata` |
+| 2 | Transcribe | `transcribe.py` | Video file path | `DoclingDocument` (preserved) |
+| 3 | Export Document | `document.py` | `DoclingDocument` + metadata | `.doctags` + `.md` files |
+| 4 | Ingest | `ingest.py` | `.doctags` file path | OpenRAG `task_id` |
+| 5 | Track State | `state.py` | video ID + `task_id` | Updated `state.json` |
 
 ---
 
 ## 3. Component Specifications
 
-### 3.1 `pipeline/acquire.py` — Audio Acquisition
+### 3.1 `pipeline/acquire.py` — Video Acquisition
 
-**Responsibility:** Download a single podcast episode from YouTube as a high-quality `.mp3` file and extract structured metadata.
+**Responsibility:** Download a single podcast episode from YouTube as a video file and extract structured metadata.
 
 **Key Inputs:**
 - `url: str` — A YouTube video URL (e.g., `https://www.youtube.com/watch?v=VIDEO_ID`) or playlist/channel URL
-- `output_dir: Path` — Directory to write the downloaded `.mp3` file
+- `output_dir: Path` — Directory to write the downloaded video file
 
 **Key Outputs:**
-- `audio_path: Path` — Absolute path to the downloaded `.mp3` file
+- `audio_path: Path` — Absolute path to the downloaded video file (`.mp4`, `.webm`, etc.)
+  - Note: Despite the name, this can be any video format that Docling can process
 - `metadata: EpisodeMetadata` — A dataclass containing:
   - `video_id: str` — YouTube video ID (used as the idempotency key)
   - `title: str` — Episode title
@@ -129,43 +135,45 @@ flowchart TD
 
 **Design Decisions:**
 
-1. **Audio format:** Download as `bestaudio/best` with `postprocessors` converting to `mp3` at 192kbps. This avoids downloading video streams and minimizes disk usage.
+1. **Video format:** Download as `best` format. Docling's ASR pipeline extracts audio from video files internally, eliminating the need for separate audio extraction. This simplifies the pipeline and reduces processing time.
 
-2. **Filename convention:** Files are named `{video_id}.mp3` (not the episode title) to avoid filesystem-unsafe characters and to make the idempotency key directly traceable to the file on disk.
+2. **Filename convention:** Files are named `{video_id}.{ext}` (not the episode title) to avoid filesystem-unsafe characters and to make the idempotency key directly traceable to the file on disk. The extension varies based on the downloaded format (`.mp4`, `.webm`, `.mkv`, etc.).
 
-3. **Playlist support:** When a playlist or channel URL is provided, `acquire.py` yields one `(audio_path, metadata)` tuple per episode. The caller (`main.py`) iterates and processes each episode independently, allowing partial failures without aborting the entire batch.
+3. **Playlist support:** When a playlist or channel URL is provided, `acquire.py` yields one `(video_path, metadata)` tuple per episode. The caller (`main.py`) iterates and processes each episode independently, allowing partial failures without aborting the entire batch.
 
 4. **yt-dlp options used:**
    ```python
    ydl_opts = {
-       "format": "bestaudio/best",
+       "format": "best",  # Download full video - Docling extracts audio internally
        "outtmpl": str(output_dir / "%(id)s.%(ext)s"),
-       "postprocessors": [{
-           "key": "FFmpegExtractAudio",
-           "preferredcodec": "mp3",
-           "preferredquality": "192",
-       }],
        "quiet": True,
        "no_warnings": True,
        "extract_flat": False,
+       "download_archive": str(audio_dir / ".yt_dlp_archive"),
    }
    ```
 
 5. **No cookies or authentication:** The pipeline assumes the YouTube channel is public. If private/unlisted videos are needed in the future, `yt-dlp`'s `--cookies-from-browser` mechanism should be used (never hardcoded credentials).
 
-> ⚠️ **Assumption:** `ffmpeg` is installed and available on `PATH` for the MP3 post-processing step. The `README.md` must document this as a system dependency.
+6. **File detection:** The code dynamically detects the downloaded file extension using glob patterns, supporting any video format yt-dlp produces.
+
+> ✅ **No FFmpeg dependency:** Unlike the previous architecture, FFmpeg is NOT required for audio extraction. Docling handles video files directly.
 
 ---
 
 ### 3.2 `pipeline/transcribe.py` — ASR Transcription
 
-**Responsibility:** Transcribe a `.mp3` audio file using Docling's ASR pipeline with Whisper Turbo.
+**Responsibility:** Transcribe a video file using Docling's ASR pipeline with Whisper Turbo, producing a structured `DoclingDocument`.
 
 **Key Inputs:**
-- `audio_path: Path` — Path to the `.mp3` file
+- `audio_path: Path` — Path to the video file (`.mp4`, `.webm`, etc.)
+  - Note: Despite the parameter name, this accepts video files
 
 **Key Outputs:**
-- Transcript text (plain text without speaker labels)
+- `TranscriptResult` dataclass containing:
+  - `document: DoclingDocument` — The structured document object (preserved for export)
+  - `markdown: str` — Markdown export of the transcript
+  - `model_info: str` — Model identification string
 
 **Key Dependencies:**
 - `docling` — `DocumentConverter`, `AsrPipeline`, `AsrPipelineOptions`, `asr_model_specs`, `AudioFormatOption`, `InputFormat`
@@ -189,67 +197,91 @@ converter = DocumentConverter(
         )
     }
 )
-result = converter.convert(str(audio_path))
-doc = result.document  # DoclingDocument with transcript
+# Pass Path object (not string) to preserve full path for ffmpeg
+result = converter.convert(audio_path)
+document = result.document  # DoclingDocument preserved for export
+markdown = document.export_to_markdown()
 ```
 
 **Design Decisions:**
 
 1. **Model choice — Whisper Turbo:** Selected for its balance of speed and accuracy. It is significantly faster than `whisper-large-v3` while maintaining high transcription quality for English podcast content. The model runs entirely locally via Docling.
 
-2. **Single transcription pass:** The current implementation uses only Docling's AsrPipeline with a single transcription pass, producing plain text transcripts without speaker identification.
+2. **DoclingDocument preservation:** The `DoclingDocument` object is returned and preserved throughout the pipeline, enabling structure-aware export formats (DocTags) that maintain document semantics for better RAG performance.
+
+3. **Video file support:** Docling's ASR pipeline automatically extracts audio from video files using its internal ffmpeg integration. No separate audio extraction step is needed.
+
+4. **Debug logging:** Comprehensive debug logging inspects the `DoclingDocument` structure to understand available timestamp data and document attributes. This aids in future enhancements for timestamp extraction.
+
+5. **Path handling:** The video file path is passed as a `Path` object (not string) to preserve the full absolute path through Docling's internal processing chain.
 
 ---
 
-### 3.3 `pipeline/document.py` — Document Construction & Export
+### 3.3 `pipeline/document.py` — Document Export
 
-**Responsibility:** Construct a `DoclingDocument` from the transcript and export it to a Markdown file.
+**Responsibility:** Export the preserved `DoclingDocument` to dual formats: DocTags (for OpenRAG) and Markdown (for humans).
 
 **Key Inputs:**
-- `transcript_text: str` — Transcribed text from Docling
+- `document: DoclingDocument` — The structured document from transcription (preserved)
 - `metadata: EpisodeMetadata`
-- `output_dir: Path` — Directory to write the `.md` file
+- `output_dir: Path` — Directory to write the export files
 
 **Key Outputs:**
-- `doc: DoclingDocument` — Fully constructed document
-- `md_path: Path` — Path to the exported `.md` file (e.g., `transcripts/{video_id}.md`)
+- `doctags_path: Path` — Path to the exported `.doctags` file (e.g., `transcripts/{video_id}_{title}.doctags`)
+- `md_path: Path` — Path to the exported `.md` file (e.g., `transcripts/{video_id}_{title}.md`)
 
 **Key Dependencies:**
-- `docling-core` — `DoclingDocument`, `TextItem`, `DocumentOrigin`
+- `docling-core` — `DoclingDocument` with `export_to_doctags()` and `export_to_markdown()` methods
 
 **Design Decisions:**
 
-1. **Markdown export format:**
+1. **Dual export strategy:**
+   - **DocTags format** (`.doctags`): Docling's structure-preserving JSON format that maintains document semantics, hierarchy, and metadata. This format is optimized for RAG ingestion and provides better retrieval quality than plain Markdown.
+   - **Markdown format** (`.md`): Human-readable reference format for manual review and debugging.
+
+2. **DoclingDocument preservation:** The `DoclingDocument` object is passed through from transcription without re-parsing. This avoids wasteful Markdown → DoclingDocument conversion and preserves all structural information from the ASR pipeline.
+
+3. **Filename convention:** Files are named `{video_id}_{sanitized_title}.{ext}` to make them easily identifiable while maintaining filesystem safety.
+
+4. **DocTags advantages for RAG:**
+   - Preserves document structure (headings, paragraphs, lists)
+   - Maintains metadata associations
+   - Enables structure-aware chunking in OpenRAG
+   - Better semantic boundaries for retrieval
+
+5. **Export format:**
    ```markdown
    # {Episode Title}
 
    **Published:** {upload_date}
    **Source:** {youtube_url}
    **Video ID:** {video_id}
+   **Channel:** {channel}
 
    ---
 
    {Transcript text}
    ```
 
-2. **Why serialize to `.md` before OpenRAG ingestion:** The `openrag-sdk` does not accept `DoclingDocument` objects directly. Serializing to Markdown also produces a human-readable artifact stored in `transcripts/` for independent use.
+6. **No re-parsing:** Unlike the previous architecture, we do NOT convert Markdown back to DoclingDocument. The original `DoclingDocument` from transcription is exported directly to both formats.
 
 ---
 
-### 3.5 `pipeline/ingest.py` — OpenRAG Ingestion
+### 3.4 `pipeline/ingest.py` — OpenRAG Ingestion
 
-**Responsibility:** Upload the exported Markdown transcript to the self-hosted OpenRAG instance using the async `openrag-sdk`.
+**Responsibility:** Upload the exported DocTags transcript to the self-hosted OpenRAG instance using the async `openrag-sdk`.
 
 **Key Inputs:**
-- `md_path: Path` — Path to the exported `.md` transcript file
+- `doctags_path: Path` — Path to the exported `.doctags` transcript file
 - `metadata: EpisodeMetadata` — Used for logging/confirmation
 - `filter_name: str` — OpenRAG knowledge filter name (default: "Videos")
+- `force: bool` — Whether to delete existing document before re-ingesting
 
 **Key Outputs:**
-- `document_id: str` — The OpenRAG document ID assigned to the ingested transcript
+- `task_id: str` — The OpenRAG task ID for the ingestion operation
 
 **Key Dependencies:**
-- `openrag-sdk` — `OpenRAGClient`, `client.documents.ingest()`
+- `openrag-sdk` — `OpenRAGClient`, `client.documents.ingest()`, `client.documents.delete()`
 - `asyncio` — The SDK is fully async
 
 **Core Implementation Pattern:**
@@ -258,52 +290,66 @@ import asyncio, os
 from pathlib import Path
 from openrag import OpenRAGClient
 
-async def _ingest(md_path: Path, filter_name: str = "Videos") -> str:
+async def _ingest(doctags_path: Path, filter_name: str = "Videos", force: bool = False) -> str:
     client = OpenRAGClient(
         api_key=os.environ["OPENRAG_API_KEY"],
         base_url=os.environ.get("OPENRAG_URL", "http://localhost:3000"),
     )
-    result = await client.documents.ingest(file_path=str(md_path))
+    
+    # Delete existing document if force=True
+    if force:
+        await client.documents.delete(doctags_path.name)
+    
+    # Ingest with wait=True to poll until completion
+    result = await client.documents.ingest(
+        file_path=str(doctags_path),
+        wait=True,
+    )
 
     # Update knowledge filter to include this document
-    await _ensure_podcast_filter(client, md_path.name, filter_name)
+    await _ensure_podcast_filter(client, doctags_path.name, filter_name)
 
-    return result.document_id
+    return result.task_id
 
-def ingest_transcript(md_path: Path, filter_name: str = "Videos") -> str:
-    return asyncio.run(_ingest(md_path, filter_name))
+def ingest_transcript(doctags_path: Path, filter_name: str = "Videos", force: bool = False) -> str:
+    return asyncio.run(_ingest(doctags_path, filter_name, force))
 ```
 
 **Design Decisions:**
 
-1. **Async bridging:** The `openrag-sdk` is fully async. Since the pipeline is otherwise synchronous, `asyncio.run()` bridges the sync/async boundary at the module boundary, avoiding `asyncio` complexity throughout the pipeline.
+1. **DocTags format for ingestion:** OpenRAG ingests the `.doctags` file (not Markdown) to preserve document structure. This enables structure-aware chunking and better retrieval quality compared to plain text.
 
-2. **OpenRAG configuration (confirmed from live instance):**
+2. **Async bridging:** The `openrag-sdk` is fully async. Since the pipeline is otherwise synchronous, `asyncio.run()` bridges the sync/async boundary at the module boundary, avoiding `asyncio` complexity throughout the pipeline.
+
+3. **OpenRAG configuration (confirmed from live instance):**
    - Embedding model: `text-embedding-3-small` (OpenAI)
    - Chunk size: 1000 tokens, overlap: 200 tokens
    - Table structure extraction: enabled
    - OCR: disabled
+   - **DocTags support:** OpenRAG can parse DocTags format to preserve document structure during chunking
    For a typical 60-minute podcast episode (~10,000–15,000 words), this produces approximately 30–50 chunks per episode.
 
-3. **Knowledge filter management:** After ingestion, the document filename is automatically added to the specified OpenRAG knowledge filter (default: "Videos"). This enables query-time filtering to scope searches to specific content categories. The filter is created if it doesn't exist, or updated if it does.
+4. **Knowledge filter management:** After ingestion, the document filename is automatically added to the specified OpenRAG knowledge filter (default: "Videos"). This enables query-time filtering to scope searches to specific content categories. The filter is created if it doesn't exist, or updated if it does.
 
-4. **Retry logic:** A simple exponential backoff retry (max 3 attempts, delays: 1s, 2s, 4s) wraps the `ingest()` call to handle transient network errors against the local Docker container.
+5. **Retry logic:** A simple exponential backoff retry (max 3 attempts, delays: 1s, 2s, 4s) wraps the `ingest()` call to handle transient network errors against the local Docker container.
 
-> ⚠️ **Assumption:** The `openrag-sdk` `ingest()` method returns an object with a `document_id` attribute. The exact response schema must be verified against the installed SDK version.
+6. **Task polling:** The `wait=True` parameter causes the SDK to poll the ingestion task until completion, returning a `task_id` when done. This simplifies error handling and state tracking.
+
+7. **Force re-ingestion:** When `--force` is used, the existing document is deleted before re-ingesting to prevent duplicate chunks in the vector store.
 
 ---
 
-### 3.6 `pipeline/state.py` — Idempotency State Tracking
+### 3.5 `pipeline/state.py` — Idempotency State Tracking
 
 **Responsibility:** Read and write the `state.json` file to track which episodes have been ingested, preventing duplicate processing.
 
-**Key Inputs / Outputs:** See [Section 8](#8-idempotency-design) for the full schema and logic.
+**Key Inputs / Outputs:** See [Section 7](#7-idempotency-design) for the full schema and logic.
 
 **Key Dependencies:** Python standard library only (`json`, `pathlib`, `datetime`, `tempfile`, `os`).
 
 ---
 
-### 3.7 `main.py` — CLI Entrypoint
+### 3.6 `main.py` — CLI Entrypoint
 
 **Responsibility:** Parse CLI arguments, run preflight checks, orchestrate the pipeline stages in order, and handle top-level error reporting.
 
@@ -322,17 +368,17 @@ optional arguments:
 
 **Orchestration Flow:**
 ```python
-for audio_path, metadata in acquire(url, output_dir):
+for video_path, metadata in acquire(url, output_dir):
     if state.is_ingested(metadata.video_id) and not args.force:
         logger.info(f"Skipping {metadata.video_id}: already ingested")
         continue
 
-    transcript_text = transcribe(audio_path)
-    doc, md_path = build_document(transcript_text, metadata)
+    transcript_result = transcribe(video_path)  # Returns DoclingDocument
+    doctags_path, md_path = export_document(transcript_result.document, metadata)
 
     if not args.dry_run:
-        document_id = ingest(md_path)
-        state.mark_ingested(metadata.video_id, document_id, metadata)
+        task_id = ingest(doctags_path, force=args.force)
+        state.mark_ingested(metadata.video_id, task_id, metadata)
 ```
 
 ---
@@ -350,24 +396,21 @@ YouTube URL (string)
         │     video_id, title, upload_date,
         │     description, url, duration_seconds
         │
-        └── audio_path (Path → .mp3 file on disk)
+        └── video_path (Path → .mp4/.webm file on disk)
                 │
                 ▼  [transcribe.py — Docling + Whisper]
                 │
-        Transcript text (plain text)
+        DoclingDocument (PRESERVED)
+          Structured document with transcript
                 │
-                ▼  [document.py — DoclingDocument construction]
+                ▼  [document.py — Dual export]
                 │
-        DoclingDocument
-          title, origin, body (TextItems)
-                │
-                ▼  [document.py — Markdown export]
-                │
-        transcripts/{video_id}.md
+        ├── transcripts/{video_id}_{title}.doctags (DocTags format)
+        └── transcripts/{video_id}_{title}.md (Markdown format)
                 │
                 ▼  [ingest.py — openrag-sdk async]
                 │
-        OpenRAG document_id (string)
+        OpenRAG task_id (string)
                 │
                 ▼  [state.py — atomic JSON write]
                 │
@@ -378,12 +421,11 @@ YouTube URL (string)
 
 | Stage | Input Type | Output Type | Key Transformation |
 |-------|-----------|-------------|-------------------|
-| Acquire | `str` URL | `Path` + `EpisodeMetadata` | HTTP stream → MP3 file + JSON metadata |
-| Transcribe | `Path` (.mp3) | Transcript text | Audio waveform → plain text transcript |
-| Build Doc | Transcript + metadata | `DoclingDocument` | Structured Python object |
-| Export | `DoclingDocument` | `.md` file | Serialized Markdown text |
-| Ingest | `.md` file path | `document_id: str` | HTTP multipart upload → chunked embeddings in OpenRAG |
-| Track | `video_id` + `document_id` | `state.json` | JSON file append (atomic) |
+| Acquire | `str` URL | `Path` + `EpisodeMetadata` | HTTP stream → Video file + JSON metadata |
+| Transcribe | `Path` (video) | `DoclingDocument` | Video → structured document (Docling extracts audio internally) |
+| Export | `DoclingDocument` + metadata | `.doctags` + `.md` files | Dual format export (structure-preserving + human-readable) |
+| Ingest | `.doctags` file path | `task_id: str` | HTTP multipart upload → structure-aware chunked embeddings in OpenRAG |
+| Track | `video_id` + `task_id` | `state.json` | JSON file append (atomic) |
 
 ---
 
@@ -391,12 +433,12 @@ YouTube URL (string)
 
 | Package | Min Version | Purpose | Notes |
 |---------|------------|---------|-------|
-| `yt-dlp` | `>=2024.1.0` | YouTube audio download and metadata extraction | Update frequently; YouTube API changes often |
-| `docling` | `>=2.0.0` | ASR pipeline, `DocumentConverter`, `DoclingDocument` | Bundles Whisper Turbo weights (~1.5 GB) |
+| `yt-dlp` | `>=2024.1.0` | YouTube video download and metadata extraction | Update frequently; YouTube API changes often |
+| `docling` | `>=2.0.0` | ASR pipeline, `DocumentConverter`, `DoclingDocument`, DocTags export | Bundles Whisper Turbo weights (~1.5 GB); handles video files directly |
 | `docling-core` | `>=2.0.0` | `DoclingDocument` data model primitives | Transitive dependency via `docling` |
 | `openrag-sdk` | `>=0.1.0` | Async client for OpenRAG document ingestion | Fully async; uses `asyncio` |
 | `python-dotenv` | `>=1.0.0` | Load `.env` file into environment variables | Dev convenience |
-| `ffmpeg` | system dep | MP3 post-processing for yt-dlp audio extraction | Install via `brew install ffmpeg` |
+| ~~`ffmpeg`~~ | ~~system dep~~ | ~~MP3 post-processing~~ | **No longer required** — Docling handles video files directly |
 
 ### `pyproject.toml` Dependencies Block
 
@@ -426,10 +468,10 @@ All secrets and configuration are passed via environment variables. The pipeline
 |----------|----------|---------|-------------|
 | `OPENRAG_API_KEY` | **Yes** | — | API key for the self-hosted OpenRAG instance. Set in the OpenRAG Docker configuration. |
 | `OPENRAG_URL` | No | `http://localhost:3000` | Base URL of the OpenRAG instance. Override if running on a non-default port or remote host. |
-| `PIPELINE_AUDIO_DIR` | No | `./audio` | Directory where downloaded `.mp3` files are stored. |
-| `PIPELINE_TRANSCRIPT_DIR` | No | `./transcripts` | Directory where exported `.md` transcript files are stored. |
+| `PIPELINE_AUDIO_DIR` | No | `./audio` | Directory where downloaded video files are stored. |
+| `PIPELINE_TRANSCRIPT_DIR` | No | `./transcripts` | Directory where exported `.doctags` and `.md` transcript files are stored. |
 | `PIPELINE_STATE_FILE` | No | `./state.json` | Path to the idempotency state file. |
-| `PIPELINE_LOG_LEVEL` | No | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `PIPELINE_LOG_LEVEL` | No | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Set to `DEBUG` to inspect DoclingDocument structure. |
 
 ### `.env.example`
 
@@ -681,9 +723,10 @@ def safe_video_id(video_id: str) -> str:
 | 3 | **Transcript text sent to OpenAI for embeddings** | Privacy implication for sensitive conversations | Switch OpenRAG to Ollama embeddings for fully local operation |
 | 4 | **No automatic new-episode detection** | Pipeline must be run manually or via cron to pick up new episodes | Add a cron job or scheduled GitHub Actions workflow |
 | 5 | **`state.json` is not safe for concurrent access** | Running two pipeline instances simultaneously may corrupt state | Use file locking (`fcntl.flock`) or migrate to SQLite for concurrent access |
-| 6 | **Audio files are not cleaned up after ingestion** | Disk usage grows with each episode (~50–100 MB per hour of audio at 192kbps) | Add `--cleanup-audio` flag to delete `.mp3` after successful ingestion |
+| 6 | **Video files are not cleaned up after ingestion** | Disk usage grows with each episode (~100–500 MB per hour of video) | Add `--cleanup-video` flag to delete video files after successful ingestion |
 | 7 | **No transcript quality scoring** | There is no automated way to detect poor transcription quality (e.g., heavy background noise, strong accents) | Manual review of `transcripts/` directory; future enhancement could add a confidence score |
 | 8 | **No speaker identification** | Transcripts are plain text without speaker labels | Future enhancement could add speaker diarization as an optional feature |
+| 9 | **Timestamp data not yet extracted** | DoclingDocument structure inspection shows no timestamp-related attributes available from Docling's ASR pipeline | Debug logging added to investigate; may require custom Whisper integration or post-processing |
 
 ---
 
