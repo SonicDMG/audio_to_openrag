@@ -8,13 +8,13 @@
 <img src="public/arrow.svg" alt="→" height="60" style="margin: 0 15px; vertical-align: bottom;"/>
 <img src="public/logos/openrag-logo-dog.svg" alt="OpenRAG" height="60"/>
 
-*Download audio from YouTube • Transcribe with Docling • Ingest into OpenRAG*
+*Download videos from YouTube • Transcribe with timestamps using Docling • Ingest into OpenRAG*
 
 ![Python](https://img.shields.io/badge/python-3.12+-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Whisper](https://img.shields.io/badge/ASR-Whisper%20Turbo-orange) ![OpenRAG](https://img.shields.io/badge/RAG-OpenRAG-purple)
 
 </div>
 
-Download audio from any YouTube video, playlist, or channel, transcribe it using **[Docling](https://github.com/DS4SD/docling)**, and ingest it into **[OpenRAG](https://github.com/langflow-ai/openrag)** for semantic search and retrieval-augmented generation.
+Download videos from any YouTube channel, transcribe them with timestamps using **[Docling](https://github.com/DS4SD/docling)**, and ingest them into **[OpenRAG](https://github.com/langflow-ai/openrag)** for semantic search and retrieval-augmented generation.
 
 ## 🛠️ Technology Stack
 
@@ -143,15 +143,17 @@ Edit `.env` with these required variables:
 
 ## 🔄 How It Works
 
-1. **Download** — Fetches audio from YouTube as MP3
-2. **Transcribe** — Uses Docling with Whisper Turbo backend for speech-to-text (plain text, no speaker labels)
-3. **Format** — Creates a structured Markdown transcript
-4. **Ingest** — Uploads to OpenRAG for semantic search
+1. **Download** — Fetches video from YouTube (supports MP4, WebM, etc.)
+2. **Transcribe** — Uses Docling with Whisper Turbo backend for speech-to-text with timestamp extraction
+3. **Export** — Creates dual formats:
+   - **DocTags** (`.doctags`) — Structure-preserving format for reference
+   - **Markdown** (`.md`) — Human-readable with `[MM:SS]` timestamps for OpenRAG
+4. **Ingest** — Uploads Markdown transcript to OpenRAG for semantic search
 5. **Track** — Saves state to prevent duplicate processing
 
-Output transcripts are saved in `./transcripts/` as Markdown files.
+Output transcripts are saved in `./transcripts/` as both DocTags and Markdown files.
 
-**Note:** The current implementation produces plain text transcripts without speaker identification or labels. All audio is transcribed as continuous text.
+**Note:** Transcripts include timestamps but not speaker labels. Speaker diarization is not implemented due to processing time costs for long-form content.
 
 ---
 

@@ -1,8 +1,8 @@
-# The Flow Pipeline — Technical Architecture & Project Specification
+# Audio to OpenRAG Pipeline — Technical Architecture & Project Specification
 
 > **Version:** 1.1.0
 > **Last Updated:** 2026-03-03
-> **Status:** Production — Docling-Based Architecture
+> **Status:** Production — Docling-Based Architecture with Timestamp Support
 > **Project Root:** `~/audio_to_openrag/`
 
 ---
@@ -25,29 +25,29 @@
 
 ## 1. Executive Summary
 
-**The Flow Pipeline** is a fully local, automated Python pipeline that ingests podcast episodes from *The Flow* YouTube channel and makes them semantically searchable via a self-hosted OpenRAG instance.
+**Audio to OpenRAG Pipeline** is a fully local, automated Python pipeline that ingests video content from any YouTube channel and makes it semantically searchable via a self-hosted OpenRAG instance.
 
 ### What It Does
 
-Given a YouTube video URL or playlist/channel URL, the pipeline:
+Given a YouTube video URL, playlist URL, or channel URL, the pipeline:
 
 1. **Downloads** the episode video using `yt-dlp`, extracting structured metadata (title, upload date, video ID, description, canonical URL).
 2. **Transcribes** the video locally using Docling's ASR pipeline backed by OpenAI Whisper Turbo — Docling extracts audio from video internally, producing a structured `DoclingDocument` without sending data to any external API.
-3. **Preserves** the `DoclingDocument` throughout the pipeline, maintaining document structure and metadata.
+3. **Preserves** the `DoclingDocument` throughout the pipeline, maintaining document structure and metadata with timestamp information.
 4. **Exports** the document in **dual formats**:
-   - **DocTags** (`.doctags`) — Docling's structure-preserving format optimized for RAG ingestion
-   - **Markdown** (`.md`) — Human-readable format for reference and review
-5. **Ingests** the DocTags file into the self-hosted OpenRAG instance via the async `openrag-sdk`, enabling semantic search and RAG-powered Q&A with preserved document structure.
+   - **DocTags** (`.doctags`) — Docling's structure-preserving format for reference
+   - **Markdown** (`.md`) — Human-readable format with timestamps for OpenRAG ingestion
+5. **Ingests** the Markdown file into the self-hosted OpenRAG instance via the async `openrag-sdk`, enabling semantic search and RAG-powered Q&A with timestamp-aware transcripts.
 6. **Tracks** ingested episodes in a local `state.json` file keyed by YouTube video ID to prevent duplicate ingestion (idempotency). A `--force` flag overrides this check.
 
 ### What It Does NOT Do
 
 - It does not publish or distribute content anywhere.
 - It does not use any cloud transcription service (Whisper runs 100% locally).
-- It does not modify or re-upload content to YouTube, Spotify, or Apple Podcasts.
+- It does not modify or re-upload content to YouTube.
 - It does not perform real-time or live-stream ingestion.
-- It does not include speaker identification or diarization.
-- It does not require FFmpeg for audio extraction (Docling handles video files directly).
+- It includes timestamp extraction from transcription but speaker diarization is not implemented (processing time would be too expensive for long-form content).
+- It requires FFmpeg for video processing (used by Docling internally).
 
 ### Deployment Context
 
@@ -87,8 +87,8 @@ flowchart TD
     end
 
     ACQ -->|video file path + metadata dict| TRANS
-    TRANS -->|DoclingDocument preserved| DOC
-    DOC -->|transcripts/video-id.doctags\ntranscripts/video-id.md| INGEST
+    TRANS -->|DoclingDocument with timestamps| DOC
+    DOC -->|transcripts/video-id.doctags (reference)\ntranscripts/video-id.md (for OpenRAG)| INGEST
     INGEST -->|openrag task_id| STATE_WRITE
     STATE_WRITE --> DONE[Done]
 
@@ -102,9 +102,9 @@ flowchart TD
 |---|-------|--------|---------------|----------------|
 | 0 | State Check | `state.py` | YouTube video ID | Skip or proceed decision |
 | 1 | Acquire | `acquire.py` | YouTube URL | Video file path + `EpisodeMetadata` |
-| 2 | Transcribe | `transcribe.py` | Video file path | `DoclingDocument` (preserved) |
-| 3 | Export Document | `document.py` | `DoclingDocument` + metadata | `.doctags` + `.md` files |
-| 4 | Ingest | `ingest.py` | `.doctags` file path | OpenRAG `task_id` |
+| 2 | Transcribe | `transcribe.py` | Video file path | `DoclingDocument` with timestamps |
+| 3 | Export Document | `document.py` | `DoclingDocument` + metadata | `.doctags` (reference) + `.md` (for OpenRAG) |
+| 4 | Ingest | `ingest.py` | `.md` file path | OpenRAG `task_id` |
 | 5 | Track State | `state.py` | video ID + `task_id` | Updated `state.json` |
 
 ---
@@ -171,9 +171,9 @@ flowchart TD
 
 **Key Outputs:**
 - `TranscriptResult` dataclass containing:
-  - `document: DoclingDocument` — The structured document object (preserved for export)
+  - `document: DoclingDocument` — The structured document object with timestamp information (preserved for export)
   - `markdown: str` — Markdown export of the transcript
-  - `model_info: str` — Model identification string
+  - `model_info: str` — Model identification string (e.g., "Docling AsrPipeline - whisper-turbo")
 
 **Key Dependencies:**
 - `docling` — `DocumentConverter`, `AsrPipeline`, `AsrPipelineOptions`, `asr_model_specs`, `AudioFormatOption`, `InputFormat`
@@ -207,13 +207,15 @@ markdown = document.export_to_markdown()
 
 1. **Model choice — Whisper Turbo:** Selected for its balance of speed and accuracy. It is significantly faster than `whisper-large-v3` while maintaining high transcription quality for English podcast content. The model runs entirely locally via Docling.
 
-2. **DoclingDocument preservation:** The `DoclingDocument` object is returned and preserved throughout the pipeline, enabling structure-aware export formats (DocTags) that maintain document semantics for better RAG performance.
+2. **DoclingDocument preservation:** The `DoclingDocument` object is returned and preserved throughout the pipeline, containing timestamp information from the ASR process. This enables timestamp-aware transcript exports.
 
 3. **Video file support:** Docling's ASR pipeline automatically extracts audio from video files using its internal ffmpeg integration. No separate audio extraction step is needed.
 
-4. **Debug logging:** Comprehensive debug logging inspects the `DoclingDocument` structure to understand available timestamp data and document attributes. This aids in future enhancements for timestamp extraction.
+4. **Timestamp extraction:** The pipeline extracts timestamps from the `DoclingDocument.texts` items, which contain `TrackSource` objects with `start_time` and `end_time` attributes. These timestamps are preserved in the Markdown export for temporal navigation.
 
-5. **Path handling:** The video file path is passed as a `Path` object (not string) to preserve the full absolute path through Docling's internal processing chain.
+5. **Debug logging:** Comprehensive debug logging inspects the `DoclingDocument` structure to report timestamp availability and segment counts. This provides visibility into the transcription quality.
+
+6. **Path handling:** The video file path is passed as a `Path` object (not string) to preserve the full absolute path through Docling's internal processing chain.
 
 ---
 
@@ -227,8 +229,8 @@ markdown = document.export_to_markdown()
 - `output_dir: Path` — Directory to write the export files
 
 **Key Outputs:**
-- `doctags_path: Path` — Path to the exported `.doctags` file (e.g., `transcripts/{video_id}_{title}.doctags`)
-- `md_path: Path` — Path to the exported `.md` file (e.g., `transcripts/{video_id}_{title}.md`)
+- `doctags_path: Path` — Path to the exported `.doctags` file (e.g., `transcripts/{video_id}_{title}.doctags`) for reference
+- `md_path: Path` — Path to the exported `.md` file (e.g., `transcripts/{video_id}_{title}.md`) with timestamps for OpenRAG ingestion
 
 **Key Dependencies:**
 - `docling-core` — `DoclingDocument` with `export_to_doctags()` and `export_to_markdown()` methods
@@ -236,34 +238,35 @@ markdown = document.export_to_markdown()
 **Design Decisions:**
 
 1. **Dual export strategy:**
-   - **DocTags format** (`.doctags`): Docling's structure-preserving JSON format that maintains document semantics, hierarchy, and metadata. This format is optimized for RAG ingestion and provides better retrieval quality than plain Markdown.
-   - **Markdown format** (`.md`): Human-readable reference format for manual review and debugging.
+   - **DocTags format** (`.doctags`): Docling's structure-preserving JSON format that maintains document semantics, hierarchy, and metadata. Exported for reference and potential future use.
+   - **Markdown format** (`.md`): Human-readable format with timestamps that is actually ingested into OpenRAG. Includes `[MM:SS]` or `[H:MM:SS]` timestamps for each segment.
 
-2. **DoclingDocument preservation:** The `DoclingDocument` object is passed through from transcription without re-parsing. This avoids wasteful Markdown → DoclingDocument conversion and preserves all structural information from the ASR pipeline.
+2. **DoclingDocument preservation:** The `DoclingDocument` object is passed through from transcription without re-parsing. This avoids wasteful Markdown → DoclingDocument conversion and preserves all timestamp information from the ASR pipeline.
 
 3. **Filename convention:** Files are named `{video_id}_{sanitized_title}.{ext}` to make them easily identifiable while maintaining filesystem safety.
 
-4. **DocTags advantages for RAG:**
-   - Preserves document structure (headings, paragraphs, lists)
-   - Maintains metadata associations
-   - Enables structure-aware chunking in OpenRAG
-   - Better semantic boundaries for retrieval
+4. **Timestamp preservation:** Timestamps are extracted from the `DoclingDocument.texts` items (which contain `TrackSource` objects) and formatted into the Markdown output as `**[MM:SS]** text` for segments without speaker labels.
 
-5. **Export format:**
+5. **Markdown export format:**
    ```markdown
    # {Episode Title}
 
-   **Published:** {upload_date}
-   **Source:** {youtube_url}
-   **Video ID:** {video_id}
    **Channel:** {channel}
+   **Date:** {upload_date}
+   **YouTube:** {youtube_url}
 
    ---
 
-   {Transcript text}
+   ## Transcript
+
+   **[0:05]** First segment text...
+
+   **[0:23]** Second segment text...
+
+   **[1:15]** Third segment text...
    ```
 
-6. **No re-parsing:** Unlike the previous architecture, we do NOT convert Markdown back to DoclingDocument. The original `DoclingDocument` from transcription is exported directly to both formats.
+6. **No re-parsing:** Unlike the previous architecture, we do NOT convert Markdown back to DoclingDocument. The original `DoclingDocument` from transcription is exported directly to both formats, preserving timestamp information.
 
 ---
 
@@ -272,10 +275,9 @@ markdown = document.export_to_markdown()
 **Responsibility:** Upload the exported DocTags transcript to the self-hosted OpenRAG instance using the async `openrag-sdk`.
 
 **Key Inputs:**
-- `doctags_path: Path` — Path to the exported `.doctags` transcript file
-- `metadata: EpisodeMetadata` — Used for logging/confirmation
-- `filter_name: str` — OpenRAG knowledge filter name (default: "Videos")
+- `transcript_path: Path` — Path to the exported `.md` transcript file (Markdown format with timestamps)
 - `force: bool` — Whether to delete existing document before re-ingesting
+- `filter_name: str` — OpenRAG knowledge filter name (default: "Videos")
 
 **Key Outputs:**
 - `task_id: str` — The OpenRAG task ID for the ingestion operation
@@ -290,7 +292,7 @@ import asyncio, os
 from pathlib import Path
 from openrag import OpenRAGClient
 
-async def _ingest(doctags_path: Path, filter_name: str = "Videos", force: bool = False) -> str:
+async def _ingest(transcript_path: Path, filter_name: str = "Videos", force: bool = False) -> str:
     client = OpenRAGClient(
         api_key=os.environ["OPENRAG_API_KEY"],
         base_url=os.environ.get("OPENRAG_URL", "http://localhost:3000"),
@@ -298,26 +300,26 @@ async def _ingest(doctags_path: Path, filter_name: str = "Videos", force: bool =
     
     # Delete existing document if force=True
     if force:
-        await client.documents.delete(doctags_path.name)
+        await client.documents.delete(transcript_path.name)
     
-    # Ingest with wait=True to poll until completion
+    # Ingest Markdown file with wait=True to poll until completion
     result = await client.documents.ingest(
-        file_path=str(doctags_path),
+        file_path=str(transcript_path),
         wait=True,
     )
 
     # Update knowledge filter to include this document
-    await _ensure_podcast_filter(client, doctags_path.name, filter_name)
+    await _ensure_podcast_filter(client, transcript_path.name, filter_name)
 
     return result.task_id
 
-def ingest_transcript(doctags_path: Path, filter_name: str = "Videos", force: bool = False) -> str:
-    return asyncio.run(_ingest(doctags_path, filter_name, force))
+def ingest_transcript(transcript_path: Path, filter_name: str = "Videos", force: bool = False) -> str:
+    return asyncio.run(_ingest(transcript_path, filter_name, force))
 ```
 
 **Design Decisions:**
 
-1. **DocTags format for ingestion:** OpenRAG ingests the `.doctags` file (not Markdown) to preserve document structure. This enables structure-aware chunking and better retrieval quality compared to plain text.
+1. **Markdown format for ingestion:** OpenRAG ingests the `.md` file (not DocTags) for compatibility. The Markdown file includes timestamps in `[MM:SS]` format for temporal navigation within transcripts.
 
 2. **Async bridging:** The `openrag-sdk` is fully async. Since the pipeline is otherwise synchronous, `asyncio.run()` bridges the sync/async boundary at the module boundary, avoiding `asyncio` complexity throughout the pipeline.
 
@@ -326,7 +328,7 @@ def ingest_transcript(doctags_path: Path, filter_name: str = "Videos", force: bo
    - Chunk size: 1000 tokens, overlap: 200 tokens
    - Table structure extraction: enabled
    - OCR: disabled
-   - **DocTags support:** OpenRAG can parse DocTags format to preserve document structure during chunking
+   - **Markdown ingestion:** OpenRAG processes Markdown files with standard chunking, preserving timestamp markers in the text
    For a typical 60-minute podcast episode (~10,000–15,000 words), this produces approximately 30–50 chunks per episode.
 
 4. **Knowledge filter management:** After ingestion, the document filename is automatically added to the specified OpenRAG knowledge filter (default: "Videos"). This enables query-time filtering to scope searches to specific content categories. The filter is created if it doesn't exist, or updated if it does.
@@ -373,11 +375,11 @@ for video_path, metadata in acquire(url, output_dir):
         logger.info(f"Skipping {metadata.video_id}: already ingested")
         continue
 
-    transcript_result = transcribe(video_path)  # Returns DoclingDocument
+    transcript_result = transcribe(video_path)  # Returns DoclingDocument with timestamps
     doctags_path, md_path = export_document(transcript_result.document, metadata)
 
     if not args.dry_run:
-        task_id = ingest(doctags_path, force=args.force)
+        task_id = ingest(md_path, force=args.force)  # Ingest Markdown file
         state.mark_ingested(metadata.video_id, task_id, metadata)
 ```
 
@@ -400,13 +402,13 @@ YouTube URL (string)
                 │
                 ▼  [transcribe.py — Docling + Whisper]
                 │
-        DoclingDocument (PRESERVED)
-          Structured document with transcript
+        DoclingDocument with timestamps
+          Structured document with transcript + TrackSource timing data
                 │
                 ▼  [document.py — Dual export]
                 │
-        ├── transcripts/{video_id}_{title}.doctags (DocTags format)
-        └── transcripts/{video_id}_{title}.md (Markdown format)
+        ├── transcripts/{video_id}_{title}.doctags (DocTags format - reference)
+        └── transcripts/{video_id}_{title}.md (Markdown with timestamps - for OpenRAG)
                 │
                 ▼  [ingest.py — openrag-sdk async]
                 │
@@ -422,9 +424,9 @@ YouTube URL (string)
 | Stage | Input Type | Output Type | Key Transformation |
 |-------|-----------|-------------|-------------------|
 | Acquire | `str` URL | `Path` + `EpisodeMetadata` | HTTP stream → Video file + JSON metadata |
-| Transcribe | `Path` (video) | `DoclingDocument` | Video → structured document (Docling extracts audio internally) |
-| Export | `DoclingDocument` + metadata | `.doctags` + `.md` files | Dual format export (structure-preserving + human-readable) |
-| Ingest | `.doctags` file path | `task_id: str` | HTTP multipart upload → structure-aware chunked embeddings in OpenRAG |
+| Transcribe | `Path` (video) | `DoclingDocument` with timestamps | Video → structured document with TrackSource timing data (Docling extracts audio internally) |
+| Export | `DoclingDocument` + metadata | `.doctags` (reference) + `.md` (with timestamps) | Dual format export: DocTags for reference, Markdown with timestamps for ingestion |
+| Ingest | `.md` file path | `task_id: str` | HTTP multipart upload → Markdown with timestamps chunked in OpenRAG |
 | Track | `video_id` + `task_id` | `state.json` | JSON file append (atomic) |
 
 ---
@@ -434,28 +436,36 @@ YouTube URL (string)
 | Package | Min Version | Purpose | Notes |
 |---------|------------|---------|-------|
 | `yt-dlp` | `>=2024.1.0` | YouTube video download and metadata extraction | Update frequently; YouTube API changes often |
-| `docling` | `>=2.0.0` | ASR pipeline, `DocumentConverter`, `DoclingDocument`, DocTags export | Bundles Whisper Turbo weights (~1.5 GB); handles video files directly |
-| `docling-core` | `>=2.0.0` | `DoclingDocument` data model primitives | Transitive dependency via `docling` |
-| `openrag-sdk` | `>=0.1.0` | Async client for OpenRAG document ingestion | Fully async; uses `asyncio` |
+| `docling[asr]` | `>=2.74.0` | ASR pipeline, `DocumentConverter`, `DoclingDocument`, timestamp extraction | Bundles Whisper Turbo weights (~1.5 GB); handles video files directly |
+| `docling-core` | `>=2.0.0` | `DoclingDocument` data model primitives with `TrackSource` | Transitive dependency via `docling` |
+| `openrag-sdk` | `>=0.1.3` | Async client for OpenRAG document ingestion | Fully async; uses `asyncio` |
 | `python-dotenv` | `>=1.0.0` | Load `.env` file into environment variables | Dev convenience |
-| ~~`ffmpeg`~~ | ~~system dep~~ | ~~MP3 post-processing~~ | **No longer required** — Docling handles video files directly |
+| `click` | `>=8.1.0` | CLI framework for command parsing | Provides `@click.command()` decorators |
+| `rich` | `>=13.0.0` | Terminal formatting and progress bars | Beautiful CLI output with colors and spinners |
+| `pyannote.audio` | `>=3.1.0` | Speaker diarization (currently disabled) | Optional future feature for speaker identification |
+| `torch` | `>=2.0.0` | PyTorch for ML models | Required by `pyannote.audio` and Docling |
+| `ffmpeg` | system dep | Video/audio processing | **Required** — Used by Docling internally for video processing |
 
 ### `pyproject.toml` Dependencies Block
 
 ```toml
 [project]
-name = "audio-to-openrag"
+name = "the-flow-pipeline"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "yt-dlp>=2024.1.0",
-    "docling>=2.0.0",
-    "openrag-sdk>=0.1.0",
+    "docling[asr]>=2.74.0",
+    "pyannote.audio>=3.1.0",
+    "torch>=2.0.0",
+    "openrag-sdk>=0.1.3",
     "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]
-flow-pipeline = "main:main"
+the-flow = "main:cli"
 ```
 
 ---
@@ -725,8 +735,8 @@ def safe_video_id(video_id: str) -> str:
 | 5 | **`state.json` is not safe for concurrent access** | Running two pipeline instances simultaneously may corrupt state | Use file locking (`fcntl.flock`) or migrate to SQLite for concurrent access |
 | 6 | **Video files are not cleaned up after ingestion** | Disk usage grows with each episode (~100–500 MB per hour of video) | Add `--cleanup-video` flag to delete video files after successful ingestion |
 | 7 | **No transcript quality scoring** | There is no automated way to detect poor transcription quality (e.g., heavy background noise, strong accents) | Manual review of `transcripts/` directory; future enhancement could add a confidence score |
-| 8 | **No speaker identification** | Transcripts are plain text without speaker labels | Future enhancement could add speaker diarization as an optional feature |
-| 9 | **Timestamp data not yet extracted** | DoclingDocument structure inspection shows no timestamp-related attributes available from Docling's ASR pipeline | Debug logging added to investigate; may require custom Whisper integration or post-processing |
+| 8 | **Speaker diarization not implemented** | Transcripts include timestamps but no speaker labels (processing time would be too expensive for long-form content) | pyannote.audio is installed but not used; could be enabled for short clips if needed |
+| 9 | **Timestamps extracted but format limited** | Timestamps are extracted from DoclingDocument TrackSource objects and formatted as [MM:SS] or [H:MM:SS] in Markdown | Current implementation provides segment-level timestamps; word-level timestamps not yet supported |
 
 ---
 
@@ -736,8 +746,8 @@ These are optional improvements that are out of scope for v1.0 but worth trackin
 
 | Priority | Enhancement | Description |
 |----------|------------|-------------|
-| High | **Automatic new-episode detection** | Poll the YouTube channel RSS feed or use `yt-dlp`'s `--dateafter` flag to automatically detect and process new episodes without manual invocation |
-| High | **Speaker diarization** | Add optional speaker identification using pyannote.audio to label speakers in transcripts |
+| High | **Automatic new-episode detection** | Poll the YouTube channel RSS feed or use `yt-dlp`'s `--dateafter` flag to automatically detect and process new videos without manual invocation |
+| Medium | **Optional speaker diarization** | Add optional speaker identification using pyannote.audio for short clips where processing time is acceptable (not suitable for long-form content due to computational cost) |
 | Medium | **Local embeddings via Ollama** | Switch OpenRAG's embedding model from `text-embedding-3-small` (OpenAI) to a locally-hosted Ollama model (e.g., `nomic-embed-text`) to keep all data fully local and eliminate OpenAI API costs |
 | Medium | **Metadata enrichment at ingestion** | Pass structured metadata (episode date, guest name, topic tags) to OpenRAG at ingestion time once the SDK supports custom metadata fields, enabling filtered RAG queries (e.g., "What did Alice say about X?") |
 | Medium | **Audio cleanup flag** | Add `--cleanup-audio` to delete `.mp3` files after successful ingestion to manage disk usage |

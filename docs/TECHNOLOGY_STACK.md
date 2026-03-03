@@ -1,15 +1,15 @@
 # Technology Stack: Docling & OpenRAG SDK Usage
 
-This document highlights the specific components from **Docling** and the **OpenRAG SDK** that power the video-to-RAG pipeline with structure-preserving DocTags export.
+This document highlights the specific components from **Docling** and the **OpenRAG SDK** that power the video-to-RAG pipeline with timestamp-aware transcription.
 
 > **Last Updated:** 2026-03-03
-> **Architecture Version:** 1.1.0 — Docling-Based with DocTags Export
+> **Architecture Version:** 1.1.0 — Docling-Based with Timestamp Support
 
 ---
 
 ## 🎯 Docling Components
 
-[Docling](https://github.com/DS4SD/docling) is IBM's open-source document understanding framework. This pipeline uses Docling for **video transcription and structure-preserving document export**:
+[Docling](https://github.com/DS4SD/docling) is IBM's open-source document understanding framework. This pipeline uses Docling for **video transcription with timestamp extraction**:
 
 ### 1. Video Transcription (ASR Pipeline)
 
@@ -71,10 +71,10 @@ from docling_core.types.doc import DoclingDocument
 ```
 
 **What It Does:**
-- **`DoclingDocument.export_to_doctags()`** — Exports to Docling's structure-preserving JSON format optimized for RAG
-- **`DoclingDocument.export_to_markdown()`** — Exports to human-readable Markdown format
-- **DocTags format** — Maintains document hierarchy, semantics, and metadata for better RAG retrieval
-- **Dual export strategy** — DocTags for OpenRAG ingestion, Markdown for human review
+- **`DoclingDocument.export_to_doctags()`** — Exports to Docling's structure-preserving JSON format for reference
+- **`DoclingDocument.export_to_markdown()`** — Exports to human-readable Markdown format with timestamps
+- **Timestamp preservation** — Extracts timing data from `TrackSource` objects and formats as `[MM:SS]` markers
+- **Dual export strategy** — DocTags for reference, Markdown with timestamps for OpenRAG ingestion
 
 **Key Implementation:**
 ```python
@@ -95,10 +95,10 @@ def export_document(document: DoclingDocument, metadata: EpisodeMetadata, output
 
 **Why This Matters:**
 - **No wasteful re-parsing** — DoclingDocument from transcription is exported directly
-- **Structure preservation** — DocTags maintains document semantics for better RAG performance
-- **Dual artifacts** — DocTags for machine consumption, Markdown for human review
-- **Better retrieval quality** — Structure-aware chunking in OpenRAG produces more relevant results
-- **Debug capabilities** — Comprehensive logging to inspect DoclingDocument structure
+- **Timestamp preservation** — Timing data from TrackSource objects is formatted into readable timestamps
+- **Dual artifacts** — DocTags for reference, Markdown with timestamps for OpenRAG ingestion
+- **Temporal navigation** — Timestamps enable users to jump to specific moments in the source video
+- **Debug capabilities** — Comprehensive logging to inspect DoclingDocument structure and timestamp availability
 
 ---
 
@@ -126,8 +126,8 @@ from openrag_sdk.models import (
 **Component:** `OpenRAGClient.documents.ingest()`
 
 **What It Does:**
-- Uploads Markdown transcripts to OpenRAG
-- Chunks documents for semantic search
+- Uploads Markdown transcripts with timestamps to OpenRAG
+- Chunks documents for semantic search (preserving timestamp markers in text)
 - Returns task status with polling support
 
 **Key Implementation:**
@@ -223,9 +223,9 @@ await client.knowledge_filters.update(filter_id, update_options)
 ```
 
 **Why This Matters:**
-- Users can filter searches to only podcast transcripts
+- Users can filter searches to specific content categories (e.g., "Videos", "TechTalks")
 - Automatically maintained — no manual filter management
-- Enables multi-tenant use cases (e.g., separate filters per channel)
+- Enables multi-tenant use cases (e.g., separate filters per channel or topic)
 
 ---
 
@@ -261,27 +261,27 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
    ↓
 2. yt-dlp downloads video → .mp4/.webm file
    ↓
-3. Docling AsrPipeline (Whisper Turbo) → DoclingDocument (PRESERVED)
+3. Docling AsrPipeline (Whisper Turbo) → DoclingDocument with timestamps
    ↓
 4. Dual Export:
-   ├─→ DocTags format (.doctags) → Structure-preserving JSON
-   └─→ Markdown format (.md) → Human-readable reference
+   ├─→ DocTags format (.doctags) → Structure-preserving JSON (reference)
+   └─→ Markdown format (.md) → Human-readable with timestamps (for OpenRAG)
    ↓
-5. OpenRAG SDK ingest() → Ingests .doctags file
+5. OpenRAG SDK ingest() → Ingests .md file with timestamps
    ↓
-6. Structure-aware chunking → Vector embeddings with preserved semantics
+6. Standard chunking → Vector embeddings with timestamp markers preserved in text
    ↓
-7. OpenRAG SDK knowledge_filters → "Podcast" filter updated
+7. OpenRAG SDK knowledge_filters → Knowledge filter updated (e.g., "Videos")
    ↓
 8. State tracking → state.json
 ```
 
 **Key Architectural Changes:**
-- ✅ **No FFmpeg audio extraction** — Docling processes video files directly
+- ✅ **FFmpeg used internally** — Docling processes video files using internal FFmpeg integration
 - ✅ **DoclingDocument preserved** — No wasteful Markdown re-parsing
-- ✅ **DocTags export** — Structure-preserving format for better RAG performance
-- ✅ **Dual format strategy** — DocTags for machines, Markdown for humans
-- ✅ **Debug logging** — Comprehensive inspection of DoclingDocument structure
+- ✅ **Timestamp extraction** — TrackSource timing data formatted as [MM:SS] markers
+- ✅ **Dual format strategy** — DocTags for reference, Markdown with timestamps for OpenRAG
+- ✅ **Debug logging** — Comprehensive inspection of DoclingDocument structure and timestamp availability
 
 ---
 
@@ -290,25 +290,25 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 ### Docling Benefits
 1. **Unified API** — Same `DocumentConverter` for video, audio, PDF, Markdown, images
 2. **Production-Ready** — IBM-maintained, battle-tested in enterprise environments
-3. **Rich Output** — Structured documents with metadata, not just raw text
+3. **Rich Output** — Structured documents with metadata and timestamps, not just raw text
 4. **Flexible Models** — Easy to swap ASR backends (Whisper Turbo, Whisper Large, etc.)
-5. **Video Support** — Processes video files directly without separate audio extraction
-6. **Structure Preservation** — DocTags export maintains document semantics for better RAG
-7. **No FFmpeg Dependency** — Docling handles video processing internally
+5. **Video Support** — Processes video files directly using internal FFmpeg integration
+6. **Timestamp Extraction** — TrackSource objects provide segment-level timing data
+7. **FFmpeg Integration** — Docling handles video processing internally (FFmpeg required as system dependency)
 
 ### OpenRAG SDK Benefits
 1. **Async-First** — Built for high-throughput ingestion pipelines
 2. **Task Polling** — `wait=True` handles long-running ingestion automatically
 3. **Knowledge Filters** — Query-time filtering without re-indexing
 4. **Self-Hosted** — Full control over your data and infrastructure
-5. **DocTags Support** — Structure-aware chunking for better retrieval quality
+5. **Markdown Ingestion** — Standard chunking with timestamp markers preserved in text
 
 ### Architecture Benefits
 1. **Efficiency** — No wasteful Markdown → DoclingDocument re-parsing
-2. **Quality** — Structure-preserving DocTags format improves RAG retrieval
-3. **Simplicity** — Fewer dependencies (no FFmpeg for audio extraction)
-4. **Debuggability** — Comprehensive logging to inspect document structure
-5. **Dual Artifacts** — DocTags for machines, Markdown for humans
+2. **Temporal Navigation** — Timestamps enable jumping to specific moments in source videos
+3. **System Dependencies** — FFmpeg required (used by Docling internally)
+4. **Debuggability** — Comprehensive logging to inspect document structure and timestamp availability
+5. **Dual Artifacts** — DocTags for reference, Markdown with timestamps for OpenRAG
 
 ---
 
@@ -318,15 +318,15 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 - **Model Selection:** `asr_model_specs.WHISPER_TURBO` (can swap to `WHISPER_LARGE` for higher accuracy)
 - **Pipeline Options:** `AsrPipelineOptions()` (can configure language, task type, etc.)
 - **Input Formats:** `InputFormat.AUDIO` (handles both video and audio files)
-- **Export Formats:** DocTags (structure-preserving) + Markdown (human-readable)
-- **Debug Logging:** Set `PIPELINE_LOG_LEVEL=DEBUG` to inspect DoclingDocument structure
+- **Export Formats:** DocTags (reference) + Markdown with timestamps (for OpenRAG)
+- **Debug Logging:** Set `LOG_LEVEL=DEBUG` to inspect DoclingDocument structure and timestamp availability
 
 ### OpenRAG SDK Configuration
 - **Base URL:** `OPENRAG_URL` environment variable (default: `http://localhost:3000`)
 - **API Key:** `OPENRAG_API_KEY` environment variable (required)
 - **Retry Logic:** 3 attempts with exponential backoff (1s, 2s, 4s delays)
 - **Wait Mode:** `wait=True` polls until ingestion completes
-- **Ingestion Format:** DocTags files (`.doctags`) for structure-aware chunking
+- **Ingestion Format:** Markdown files (`.md`) with timestamp markers
 
 ---
 
@@ -345,21 +345,21 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 - Docling is designed for **document understanding**, not just text extraction
 - It preserves structure (headings, tables, lists) across formats
 - The ASR pipeline is just one of many specialized pipelines (OCR, layout analysis, etc.)
-- **DocTags format** is Docling's native structure-preserving export format
-- Video files are processed directly — no separate audio extraction needed
+- **TrackSource objects** provide segment-level timestamp data from ASR
+- Video files are processed using internal FFmpeg integration
 
 ### Understanding OpenRAG
 - OpenRAG is a **self-hosted RAG platform**, not a cloud service
 - It handles chunking, embedding, and vector storage automatically
 - Knowledge filters enable **query-time filtering** without re-indexing
-- **DocTags support** enables structure-aware chunking for better retrieval
+- **Markdown ingestion** with timestamp markers preserved in chunked text
 
-### Understanding the New Architecture
+### Understanding the Current Architecture
 - **DoclingDocument preservation** — No wasteful re-parsing of Markdown
-- **Dual export strategy** — DocTags for RAG optimization, Markdown for humans
-- **No FFmpeg dependency** — Docling handles video files end-to-end
-- **Debug capabilities** — Comprehensive logging to inspect document structure
-- **Timestamp investigation** — Debug logging added to understand timestamp availability
+- **Dual export strategy** — DocTags for reference, Markdown with timestamps for OpenRAG
+- **FFmpeg required** — Docling uses FFmpeg internally for video processing
+- **Debug capabilities** — Comprehensive logging to inspect document structure and timestamps
+- **Timestamp extraction** — TrackSource timing data formatted as [MM:SS] markers in Markdown
 
 ---
 
