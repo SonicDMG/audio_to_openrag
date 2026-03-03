@@ -24,6 +24,7 @@ import logging
 import os
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,7 +39,8 @@ from pipeline import acquire, config, document, state, transcribe
 from pipeline import ingest as ingest_mod
 from pipeline.document import DiarizedSegment
 from pipeline.logos import display_logo
-from pipeline.utils import ensure_ffmpeg_on_path
+from pipeline.state import _atomic_write
+from pipeline.utils import ensure_ffmpeg_on_path, validate_video_id
 
 if TYPE_CHECKING:
     from pipeline.acquire import EpisodeAudio
@@ -175,10 +177,11 @@ def cli() -> None:
 )
 @click.option(
     "--filter",
+    "filter_name",
     default="Videos",
     help="OpenRAG knowledge filter name (default: Videos).",
 )
-def ingest(url: str, force: bool, dry_run: bool, filter: str) -> None:
+def ingest(url: str, force: bool, dry_run: bool, filter_name: str) -> None:
     """Download, transcribe, and ingest a YouTube episode or playlist.
 
     URL can be a single video, a playlist, or a channel URL.
@@ -256,7 +259,7 @@ def ingest(url: str, force: bool, dry_run: bool, filter: str) -> None:
                     state_file=state_file,
                     force=force,
                     dry_run=dry_run,
-                    filter_name=filter,
+                    filter_name=filter_name,
                     transcribe_mod=transcribe,
                     document_mod=document,
                     ingest_module=ingest_mod,
@@ -450,48 +453,44 @@ def _process_episode(
 @click.argument("video_id")
 def remove(video_id: str) -> None:
     """Remove an episode from state.json (does NOT delete from OpenRAG).
-    
+
     Use this when you've manually deleted a document from OpenRAG and want
     to re-ingest it. After removing from state, you can run 'ingest' again.
-    
+
     To also delete from OpenRAG, use 'ingest --force' instead.
     """
-    from datetime import datetime, timezone
-    from pipeline.utils import validate_video_id
-    
     state_file = config.get_state_file()
-    
+
     try:
         video_id = validate_video_id(video_id)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    
+
     all_state = state.get_all(state_file)
     episodes = all_state.get("episodes", {})
-    
+
     if video_id not in episodes:
         console.print(f"[yellow]Video ID '{video_id}' not found in state.json[/yellow]")
         console.print(f"State file: {state_file}")
         return
-    
+
     # Show what we're removing
     entry = episodes[video_id]
-    console.print(f"[bold]Removing from state:[/bold]")
+    console.print("[bold]Removing from state:[/bold]")
     console.print(f"  Video ID: {video_id}")
     console.print(f"  Title: {entry.get('title', 'N/A')}")
     console.print(f"  OpenRAG Doc ID: {entry.get('openrag_document_id', 'N/A')}")
-    
+
     # Remove the entry
     del episodes[video_id]
     all_state["last_updated"] = datetime.now(timezone.utc).isoformat()
-    
+
     # Write back atomically
-    from pipeline.state import _atomic_write
     _atomic_write(state_file, all_state)
-    
+
     console.print(f"[green]✓ Removed {video_id} from state.json[/green]")
-    console.print(f"[dim]Note: This does NOT delete the document from OpenRAG.[/dim]")
-    console.print(f"[dim]You can now re-run 'ingest' to process this video again.[/dim]")
+    console.print("[dim]Note: This does NOT delete the document from OpenRAG.[/dim]")
+    console.print("[dim]You can now re-run 'ingest' to process this video again.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -552,4 +551,3 @@ def status() -> None:
 
 if __name__ == "__main__":
     cli()
-

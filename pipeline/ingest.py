@@ -409,4 +409,3 @@ def ingest_transcript(
     )
 
     return asyncio.run(_ingest_async(transcript_path, force, filter_name))
-
