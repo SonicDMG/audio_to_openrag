@@ -1,4 +1,4 @@
-# 🎙️ Audio to OpenRAG Pipeline
+# 🎙️ Audio/Video to OpenRAG Pipeline
 
 <div align="center">
 
