@@ -11,6 +11,8 @@ This document highlights the specific components from **Docling** and the **Open
 
 [Docling](https://github.com/DS4SD/docling) is IBM's open-source document understanding framework. This pipeline uses Docling for **video transcription with timestamp extraction**:
 
+> **Note:** Diarization has been removed from this pipeline. Transcripts are produced without speaker labels using only Docling's ASR pipeline. The `pyannote.audio` dependency is listed but not actively used.
+
 ### 1. Video Transcription (ASR Pipeline)
 
 **Location:** `pipeline/transcribe.py`
@@ -29,7 +31,7 @@ from docling.pipeline.asr_pipeline import AsrPipeline
 - **`asr_model_specs.WHISPER_TURBO`** — Pre-configured Whisper Turbo model specification for fast, accurate transcription
 - **`DocumentConverter`** — Docling's unified converter that can process multiple document types (PDF, video, audio, images, etc.)
 - **`AudioFormatOption`** — Configuration class that tells DocumentConverter to use the ASR pipeline for media files
-- **Video file support** — Docling automatically extracts audio from video files internally using ffmpeg
+- **Video file support** — Downloads full video files (`.mp4`, `.webm`, etc.) and Docling extracts audio internally using ffmpeg (no separate audio extraction step needed)
 
 **Key Implementation:**
 ```python
@@ -61,7 +63,18 @@ document = result.document  # DoclingDocument preserved for export
 
 ---
 
-### 2. Structure-Preserving Document Export
+### 2. Semantic Chunking
+
+**Component:** `HierarchicalChunker` (default in Docling)
+
+**What It Does:**
+- Automatically chunks documents for semantic search
+- Preserves document structure and context
+- Used by default when documents are ingested into OpenRAG
+
+---
+
+### 3. Structure-Preserving Document Export
 
 **Location:** `pipeline/document.py`
 
@@ -72,7 +85,7 @@ from docling_core.types.doc import DoclingDocument
 
 **What It Does:**
 - **`DoclingDocument.export_to_doctags()`** — Exports to Docling's structure-preserving JSON format for reference
-- **`DoclingDocument.export_to_markdown()`** — Exports to human-readable Markdown format with timestamps
+- **Custom `_build_markdown()` function** — Builds human-readable Markdown with formatted timestamps (instead of using `document.export_to_markdown()`)
 - **Timestamp preservation** — Extracts timing data from `TrackSource` objects and formats as `[MM:SS]` markers
 - **Dual export strategy** — DocTags for reference, Markdown with timestamps for OpenRAG ingestion
 
@@ -81,21 +94,21 @@ from docling_core.types.doc import DoclingDocument
 def export_document(document: DoclingDocument, metadata: EpisodeMetadata, output_dir: Path):
     """Export DoclingDocument to dual formats."""
     # Export to DocTags (structure-preserving for RAG)
-    doctags_data = document.export_to_doctags()
+    doctags_content = document.export_to_doctags()
     doctags_path = output_dir / f"{video_id}_{title}.doctags"
-    doctags_path.write_text(json.dumps(doctags_data, indent=2))
+    doctags_path.write_text(json.dumps(doctags_content, indent=2))
     
-    # Export to Markdown (human-readable reference)
-    markdown = document.export_to_markdown()
+    # Export to Markdown using custom builder with formatted timestamps
+    markdown_content = _build_markdown(episode, segments)
     md_path = output_dir / f"{video_id}_{title}.md"
-    md_path.write_text(markdown)
+    md_path.write_text(markdown_content)
     
     return doctags_path, md_path
 ```
 
 **Why This Matters:**
 - **No wasteful re-parsing** — DoclingDocument from transcription is exported directly
-- **Timestamp preservation** — Timing data from TrackSource objects is formatted into readable timestamps
+- **Custom Markdown builder** — Uses `_build_markdown()` to format timestamps precisely as `[MM:SS]` markers
 - **Dual artifacts** — DocTags for reference, Markdown with timestamps for OpenRAG ingestion
 - **Temporal navigation** — Timestamps enable users to jump to specific moments in the source video
 - **Debug capabilities** — Comprehensive logging to inspect DoclingDocument structure and timestamp availability
@@ -336,6 +349,21 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 - **Docling Audio Example:** https://github.com/TejasQ/example-docling-media
 - **OpenRAG Documentation:** https://github.com/langflow-ai/openrag
 - **OpenRAG SDK:** https://pypi.org/project/openrag-sdk/
+
+---
+
+## 📦 Complete Dependency List
+
+From `pyproject.toml`:
+
+- **yt-dlp>=2024.1.0** — YouTube video/audio download
+- **docling[asr]>=2.74.0** — Document understanding and ASR transcription
+- **pyannote.audio>=3.1.0** — Listed but not actively used (diarization removed)
+- **torch>=2.0.0** — Required by Docling for ML models
+- **openrag-sdk>=0.1.3** — OpenRAG platform client
+- **python-dotenv>=1.0.0** — Environment variable management
+- **click>=8.1.0** — CLI framework
+- **rich>=13.0.0** — Terminal formatting and progress bars
 
 ---
 
