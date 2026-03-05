@@ -8,22 +8,60 @@
 <img src="public/arrow.svg" alt="→" height="60" style="margin: 0 15px; vertical-align: bottom;"/>
 <img src="public/logos/openrag-logo-dog.svg" alt="OpenRAG" height="60"/>
 
-*Download videos from YouTube • Transcribe with timestamps using Docling • Ingest into OpenRAG*
+*Download videos from YouTube • Transcribe with timestamps using Whisper (via Docling) • Ingest into OpenRAG*
 
 ![Python](https://img.shields.io/badge/python-3.12+-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Whisper](https://img.shields.io/badge/ASR-Whisper%20Turbo-orange) ![OpenRAG](https://img.shields.io/badge/RAG-OpenRAG-purple)
 
 </div>
 
-Download videos from any YouTube channel, transcribe them with timestamps using **[Docling](https://github.com/DS4SD/docling)**, and ingest them into **[OpenRAG](https://github.com/langflow-ai/openrag)** for semantic search and retrieval-augmented generation.
+## 📖 About This Project
+
+**This project demonstrates a complete video-to-RAG pipeline** using **OpenAI's Whisper** for transcription (accessed via Docling's ASR wrapper) and **[OpenRAG](https://github.com/langflow-ai/openrag)** for semantic search and retrieval.
+
+We use **[Docling](https://github.com/DS4SD/docling)**'s `DocumentConverter` and `AsrPipeline` as a convenient interface to Whisper, benefiting from Docling's structured `DoclingDocument` format for consistent processing and export. This creates an end-to-end pipeline from YouTube videos to queryable knowledge bases with timestamp-aware transcripts.
+
+## 🎯 Why These Tools?
+
+### Whisper for Transcription (via Docling's Wrapper)
+
+**[OpenAI's Whisper](https://github.com/openai/whisper)** is the state-of-the-art speech recognition model, and we access it through **[Docling](https://github.com/DS4SD/docling)**'s convenient wrapper:
+
+- **🎙️ Whisper Turbo** — Fast, accurate multilingual speech-to-text from OpenAI
+- **🎥 Video Support** — Docling handles video files directly (extracts audio internally via ffmpeg)
+- **⏱️ Timestamp Precision** — Automatic timestamp extraction for temporal navigation
+- **📄 Unified API** — Docling's `DocumentConverter` provides a consistent interface across formats
+- **🏗️ Structure Preservation** — Results returned as structured `DoclingDocument` objects
+- **🔧 Production Ready** — Docling is IBM Research's enterprise-grade document processing framework
+
+**Why use Docling as a wrapper?** It provides a clean, unified API and structured document format (`DoclingDocument`) that simplifies downstream processing, export, and integration with RAG systems.
+
+### OpenRAG for Streamlined RAG
+
+**[OpenRAG](https://github.com/langflow-ai/openrag)** provides a focused, modern approach to RAG:
+
+- **🎯 Purpose-Built** — Designed specifically for retrieval-augmented generation workflows
+- **🏷️ Knowledge Filters** — First-class support for scoped searches and content organization
+- **⚡ Lightweight** — Minimal dependencies, clean API, fast iteration
+- **🔄 Simple Lifecycle** — Straightforward document ingestion, updates, and deletion
+- **📊 Developer-Friendly** — Intuitive SDK without the complexity of larger frameworks
+
+### What This Pipeline Demonstrates
+
+- **Video-to-RAG Pipeline** — Complete workflow from YouTube to queryable knowledge base
+- **Best-of-Breed Tools** — Whisper for transcription, Docling for structure, OpenRAG for search
+- **Semantic Video Search** — Find content by meaning with timestamp links back to source
+- **Scalable Ingestion** — Process entire channels or playlists efficiently with state management
+
 
 ## 🛠️ Technology Stack
 
 This pipeline is built entirely on **open source** platforms:
 
-### 🎯 Docling (Audio Transcription)
-- **AsrPipeline** — Docling's audio processing pipeline with Whisper Turbo backend
-- **DocumentConverter** — Unified converter for audio and Markdown processing
-- Handles speech-to-text conversion and structured document output
+### 🎯 Whisper via Docling (Audio Transcription)
+- **Whisper Turbo** — OpenAI's fast, accurate speech recognition model
+- **AsrPipeline** — Docling's wrapper providing convenient access to Whisper
+- **DocumentConverter** — Unified interface for processing audio/video files
+- Returns structured `DoclingDocument` objects with timestamps
 
 ### 🚀 OpenRAG SDK (Document Ingestion)
 - **documents.ingest()** — Uploads transcripts with automatic chunking and embedding
@@ -39,9 +77,10 @@ This pipeline is built entirely on **open source** platforms:
 
 ## 🙏 Attribution
 
-This project builds upon the excellent audio processing work by [Tejas Kumar](https://github.com/TejasQ/example-docling-media). The core audio transcription pipeline was derived from his example, which demonstrates how to use Docling for media transcription. We've extended it to create an end-to-end ingestion pipeline for OpenRAG.
+This project builds upon the excellent work by [Tejas Kumar](https://github.com/TejasQ/example-docling-media), which demonstrates how to use Docling's ASR wrapper for media transcription. We've extended this pattern to create an end-to-end ingestion pipeline for OpenRAG with state management, batch processing, and timestamp preservation.
 
 **Original work:** https://github.com/TejasQ/example-docling-media
+**Transcription engine:** [OpenAI Whisper](https://github.com/openai/whisper)
 
 ---
 
@@ -50,7 +89,7 @@ This project builds upon the excellent audio processing work by [Tejas Kumar](ht
 ### ✅ Prerequisites
 
 1. **Python 3.12+**
-2. **ffmpeg** (for audio conversion)
+2. **ffmpeg** (system dependency - required by Docling for video/audio processing)
    ```bash
    # macOS
    brew install ffmpeg
@@ -59,7 +98,6 @@ This project builds upon the excellent audio processing work by [Tejas Kumar](ht
    sudo apt install ffmpeg
    ```
 3. **OpenRAG instance** running (default: `http://localhost:3000`)
-   - Docling is included with the OpenRAG installation
    - See setup instructions at: https://github.com/langflow-ai/openrag
 
 ### 📦 Installation
@@ -144,7 +182,7 @@ Edit `.env` with these required variables:
 ## 🔄 How It Works
 
 1. **Download** — Fetches video from YouTube (supports MP4, WebM, etc.)
-2. **Transcribe** — Uses Docling with Whisper Turbo backend for speech-to-text with timestamp extraction
+2. **Transcribe** — Uses Whisper Turbo (via Docling's ASR wrapper) for speech-to-text with timestamp extraction
 3. **Export** — Creates dual formats:
    - **DocTags** (`.doctags`) — Structure-preserving format for reference
    - **Markdown** (`.md`) — Human-readable with `[MM:SS]` timestamps for OpenRAG

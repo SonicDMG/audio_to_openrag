@@ -1,8 +1,8 @@
 # Audio to OpenRAG Pipeline — Technical Architecture & Project Specification
 
 > **Version:** 1.1.0
-> **Last Updated:** 2026-03-03
-> **Status:** Production — Docling-Based Architecture with Timestamp Support
+> **Last Updated:** 2026-03-05
+> **Status:** Production — Whisper-Based Transcription (via Docling Wrapper) with Timestamp Support
 > **Project Root:** `~/audio_to_openrag/`
 
 ---
@@ -32,7 +32,7 @@
 Given a YouTube video URL, playlist URL, or channel URL, the pipeline:
 
 1. **Downloads** the episode video using `yt-dlp`, extracting structured metadata (title, upload date, video ID, description, canonical URL).
-2. **Transcribes** the video locally using Docling's ASR pipeline backed by OpenAI Whisper Turbo — Docling extracts audio from video internally, producing a structured `DoclingDocument` without sending data to any external API.
+2. **Transcribes** the video locally using OpenAI's Whisper Turbo (accessed via Docling's ASR wrapper) — Docling extracts audio from video internally, producing a structured `DoclingDocument` without sending data to any external API.
 3. **Preserves** the `DoclingDocument` throughout the pipeline, maintaining document structure and metadata with timestamp information.
 4. **Exports** the document in **dual formats**:
    - **DocTags** (`.doctags`) — Docling's structure-preserving format for reference
@@ -56,7 +56,7 @@ The pipeline runs as a local CLI tool on the user's macOS machine. The only exte
 - **Outbound to `localhost:3000`** (self-hosted OpenRAG Docker container)
 - **Outbound to OpenAI API** for embedding generation via OpenRAG's configured `text-embedding-3-small` model
 
-All transcription happens locally via Docling's ASR pipeline. Video files are processed directly without intermediate audio extraction.
+All transcription happens locally via Whisper (accessed through Docling's ASR wrapper). Video files are processed directly without intermediate audio extraction.
 
 ---
 
@@ -74,7 +74,7 @@ flowchart TD
     end
 
     subgraph STAGE_2 [Stage 2: Transcribe]
-        TRANS[transcribe.py\nDocling DocumentConverter\nAsrPipeline + WHISPER_TURBO\nProduces DoclingDocument]
+        TRANS[transcribe.py\nWhisper Turbo via Docling\nAsrPipeline wrapper\nProduces DoclingDocument]
     end
 
     subgraph STAGE_3 [Stage 3: Export Document]
@@ -135,7 +135,7 @@ flowchart TD
 
 **Design Decisions:**
 
-1. **Video format:** Download as `best` format. Docling's ASR pipeline extracts audio from video files internally, eliminating the need for separate audio extraction. This simplifies the pipeline and reduces processing time.
+1. **Video format:** Download as `best` format. Docling's ASR wrapper extracts audio from video files internally (using ffmpeg), eliminating the need for separate audio extraction. This simplifies the pipeline and reduces processing time.
 
 2. **Filename convention:** Files are named `{video_id}.{ext}` (not the episode title) to avoid filesystem-unsafe characters and to make the idempotency key directly traceable to the file on disk. The extension varies based on the downloaded format (`.mp4`, `.webm`, `.mkv`, etc.).
 
@@ -163,7 +163,7 @@ flowchart TD
 
 ### 3.2 `pipeline/transcribe.py` — ASR Transcription
 
-**Responsibility:** Transcribe a video file using Docling's ASR pipeline with Whisper Turbo, producing a structured `DoclingDocument`.
+**Responsibility:** Transcribe a video file using Whisper Turbo (via Docling's ASR wrapper), producing a structured `DoclingDocument`.
 
 **Key Inputs:**
 - `audio_path: Path` — Path to the video file (`.mp4`, `.webm`, etc.)
@@ -173,7 +173,7 @@ flowchart TD
 - `TranscriptResult` dataclass containing:
   - `document: DoclingDocument` — The structured document object with timestamp information (preserved for export)
   - `markdown: str` — Markdown export of the transcript
-  - `model_info: str` — Model identification string (e.g., "Docling AsrPipeline - whisper-turbo")
+  - `model_info: str` — Model identification string (e.g., "Whisper Turbo via Docling AsrPipeline")
 
 **Key Dependencies:**
 - `docling` — `DocumentConverter`, `AsrPipeline`, `AsrPipelineOptions`, `asr_model_specs`, `AudioFormatOption`, `InputFormat`
@@ -205,13 +205,13 @@ markdown = document.export_to_markdown()
 
 **Design Decisions:**
 
-1. **Model choice — Whisper Turbo:** Selected for its balance of speed and accuracy. It is significantly faster than `whisper-large-v3` while maintaining high transcription quality for English podcast content. The model runs entirely locally via Docling.
+1. **Model choice — Whisper Turbo:** Selected for its balance of speed and accuracy. It is significantly faster than `whisper-large-v3` while maintaining high transcription quality for English podcast content. The model runs entirely locally, accessed via Docling's ASR wrapper.
 
 2. **DoclingDocument preservation:** The `DoclingDocument` object is returned and preserved throughout the pipeline, containing timestamp information from the ASR process. This enables timestamp-aware transcript exports.
 
-3. **Video file support:** Docling's ASR pipeline automatically extracts audio from video files using its internal ffmpeg integration. No separate audio extraction step is needed.
+3. **Video file support:** Docling's ASR wrapper automatically extracts audio from video files using its internal ffmpeg integration. No separate audio extraction step is needed.
 
-4. **Timestamp extraction:** The pipeline extracts timestamps from the `DoclingDocument.texts` items, which contain `TrackSource` objects with `start_time` and `end_time` attributes. These timestamps are preserved in the Markdown export for temporal navigation.
+4. **Timestamp extraction:** Whisper provides timestamps which are captured in the `DoclingDocument.texts` items as `TrackSource` objects with `start_time` and `end_time` attributes. These timestamps are preserved in the Markdown export for temporal navigation.
 
 5. **Debug logging:** Comprehensive debug logging inspects the `DoclingDocument` structure to report timestamp availability and segment counts. This provides visibility into the transcription quality.
 
@@ -400,10 +400,10 @@ YouTube URL (string)
         │
         └── video_path (Path → .mp4/.webm file on disk)
                 │
-                ▼  [transcribe.py — Docling + Whisper]
+                ▼  [transcribe.py — Whisper via Docling wrapper]
                 │
         DoclingDocument with timestamps
-          Structured document with transcript + TrackSource timing data
+          Structured document with transcript + TrackSource timing data from Whisper
                 │
                 ▼  [document.py — Dual export]
                 │
@@ -424,7 +424,7 @@ YouTube URL (string)
 | Stage | Input Type | Output Type | Key Transformation |
 |-------|-----------|-------------|-------------------|
 | Acquire | `str` URL | `Path` + `EpisodeMetadata` | HTTP stream → Video file + JSON metadata |
-| Transcribe | `Path` (video) | `DoclingDocument` with timestamps | Video → structured document with TrackSource timing data (Docling extracts audio internally) |
+| Transcribe | `Path` (video) | `DoclingDocument` with timestamps | Video → structured document with TrackSource timing data (Whisper via Docling wrapper extracts audio internally) |
 | Export | `DoclingDocument` + metadata | `.doctags` (reference) + `.md` (with timestamps) | Dual format export: DocTags for reference, Markdown with timestamps for ingestion |
 | Ingest | `.md` file path | `task_id: str` | HTTP multipart upload → Markdown with timestamps chunked in OpenRAG |
 | Track | `video_id` + `task_id` | `state.json` | JSON file append (atomic) |
@@ -436,7 +436,7 @@ YouTube URL (string)
 | Package | Min Version | Purpose | Notes |
 |---------|------------|---------|-------|
 | `yt-dlp` | `>=2024.1.0` | YouTube video download and metadata extraction | Update frequently; YouTube API changes often |
-| `docling[asr]` | `>=2.74.0` | ASR pipeline, `DocumentConverter`, `DoclingDocument`, timestamp extraction | Bundles Whisper Turbo weights (~1.5 GB); handles video files directly |
+| `docling[asr]` | `>=2.74.0` | ASR wrapper, `DocumentConverter`, `DoclingDocument`, timestamp extraction | Provides wrapper around Whisper; bundles Whisper Turbo weights (~1.5 GB); handles video files directly |
 | `docling-core` | `>=2.0.0` | `DoclingDocument` data model primitives with `TrackSource` | Transitive dependency via `docling` |
 | `openrag-sdk` | `>=0.1.3` | Async client for OpenRAG document ingestion | Fully async; uses `asyncio` |
 | `python-dotenv` | `>=1.0.0` | Load `.env` file into environment variables | Dev convenience |
@@ -602,7 +602,7 @@ The pipeline uses a **fail-fast per episode, continue across episodes** strategy
 | **Acquire** | Network error, video unavailable, geo-blocked | Log `ERROR` with video ID, skip episode, continue batch |
 | **Acquire** | `ffmpeg` not found on PATH | Raise `SystemExit` with install instructions — fatal configuration error caught at preflight |
 | **Acquire** | Disk full | Raise `OSError`, log `CRITICAL`, abort entire run |
-| **Transcribe** | Whisper model not yet downloaded | Docling downloads automatically on first use; log progress |
+| **Transcribe** | Whisper model not yet downloaded | Whisper model downloads automatically on first use via Docling; log progress |
 | **Transcribe** | Audio file corrupt or unreadable | Log `ERROR`, skip episode |
 | **Transcribe** | Out of memory (very long episode) | Log `ERROR` with suggestion to use a smaller Whisper model variant, skip episode |
 | **Build Document** | Empty transcript | Log `WARNING`, write empty transcript body, continue to ingest (empty doc is valid) |
@@ -774,7 +774,7 @@ These are optional improvements that are out of scope for v1.0 but worth trackin
 ├── pipeline/
 │   ├── __init__.py
 │   ├── acquire.py           ← yt-dlp YouTube download + metadata extraction
-│   ├── transcribe.py        ← Docling ASR + Whisper Turbo transcription
+│   ├── transcribe.py        ← Whisper Turbo transcription (via Docling ASR wrapper)
 │   ├── document.py          ← DoclingDocument build, .md export
 │   ├── ingest.py            ← openrag-sdk async ingestion
 │   └── state.py             ← Idempotency state tracking (state.json)

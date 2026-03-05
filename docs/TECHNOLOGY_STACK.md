@@ -1,17 +1,15 @@
-# Technology Stack: Docling & OpenRAG SDK Usage
+# Technology Stack: Whisper, Docling & OpenRAG SDK Usage
 
-This document highlights the specific components from **Docling** and the **OpenRAG SDK** that power the video-to-RAG pipeline with timestamp-aware transcription.
+This document highlights the specific components from **Whisper** (via **Docling's ASR wrapper**) and the **OpenRAG SDK** that power the video-to-RAG pipeline with timestamp-aware transcription.
 
-> **Last Updated:** 2026-03-03
-> **Architecture Version:** 1.1.0 — Docling-Based with Timestamp Support
+> **Last Updated:** 2026-03-05
+> **Architecture Version:** 1.1.0 — Whisper-Based Transcription with Docling Wrapper
 
 ---
 
-## 🎯 Docling Components
+## 🎯 Whisper Transcription (via Docling's ASR Wrapper)
 
-[Docling](https://github.com/DS4SD/docling) is IBM's open-source document understanding framework. This pipeline uses Docling for **video transcription with timestamp extraction**:
-
-> **Note:** Diarization has been removed from this pipeline. Transcripts are produced without speaker labels using only Docling's ASR pipeline. The `pyannote.audio` dependency is listed but not actively used.
+[OpenAI's Whisper](https://github.com/openai/whisper) is the state-of-the-art speech recognition model. This pipeline accesses Whisper through [Docling](https://github.com/DS4SD/docling)'s convenient ASR wrapper for **video transcription with timestamp extraction**.
 
 ### 1. Video Transcription (ASR Pipeline)
 
@@ -27,11 +25,12 @@ from docling.pipeline.asr_pipeline import AsrPipeline
 ```
 
 **What It Does:**
-- **`AsrPipeline`** — Docling's media processing pipeline that handles speech-to-text conversion from video or audio files
+- **`AsrPipeline`** — Docling's wrapper around Whisper that handles speech-to-text conversion from video or audio files
 - **`asr_model_specs.WHISPER_TURBO`** — Pre-configured Whisper Turbo model specification for fast, accurate transcription
-- **`DocumentConverter`** — Docling's unified converter that can process multiple document types (PDF, video, audio, images, etc.)
+- **`DocumentConverter`** — Docling's unified converter that provides a consistent interface across formats
 - **`AudioFormatOption`** — Configuration class that tells DocumentConverter to use the ASR pipeline for media files
 - **Video file support** — Downloads full video files (`.mp4`, `.webm`, etc.) and Docling extracts audio internally using ffmpeg (no separate audio extraction step needed)
+- **Whisper engine** — The actual transcription is performed by OpenAI's Whisper model running locally
 
 **Key Implementation:**
 ```python
@@ -55,11 +54,12 @@ document = result.document  # DoclingDocument preserved for export
 ```
 
 **Why This Matters:**
-- Docling handles all the complexity of video/audio processing (ffmpeg integration, model loading, chunking)
+- Docling's wrapper handles the complexity of video/audio processing (ffmpeg integration, model loading, chunking)
+- Whisper performs the actual transcription locally on your machine
 - Returns a structured `DoclingDocument` with rich metadata
 - **No separate audio extraction needed** — processes video files directly
 - DoclingDocument is preserved throughout the pipeline for structure-aware export
-- No need to manage Whisper models directly
+- Clean API without needing to manage Whisper models directly
 
 ---
 
@@ -267,14 +267,14 @@ except NotFoundError:
 
 ## 🔄 Pipeline Flow
 
-Here's how Docling and OpenRAG SDK work together in the new architecture:
+Here's how Whisper (via Docling) and OpenRAG SDK work together in the new architecture:
 
 ```
 1. YouTube URL
    ↓
 2. yt-dlp downloads video → .mp4/.webm file
    ↓
-3. Docling AsrPipeline (Whisper Turbo) → DoclingDocument with timestamps
+3. Whisper Turbo (via Docling AsrPipeline) → DoclingDocument with timestamps
    ↓
 4. Dual Export:
    ├─→ DocTags format (.doctags) → Structure-preserving JSON (reference)
@@ -290,6 +290,8 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 ```
 
 **Key Architectural Changes:**
+- ✅ **Whisper for transcription** — OpenAI's Whisper Turbo model performs the actual speech-to-text
+- ✅ **Docling as wrapper** — Provides convenient API and structured document format
 - ✅ **FFmpeg used internally** — Docling processes video files using internal FFmpeg integration
 - ✅ **DoclingDocument preserved** — No wasteful Markdown re-parsing
 - ✅ **Timestamp extraction** — TrackSource timing data formatted as [MM:SS] markers
@@ -300,13 +302,21 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 
 ## 📊 Key Advantages
 
-### Docling Benefits
+### Technology Benefits
+
+**Whisper (Transcription Engine):**
+1. **State-of-the-art accuracy** — OpenAI's best-in-class speech recognition
+2. **Multilingual support** — Handles 99+ languages
+3. **Local execution** — Runs entirely on your machine, no API calls
+4. **Fast performance** — Whisper Turbo provides 4-10x realtime speed
+
+**Docling (Wrapper & Document Format):**
 1. **Unified API** — Same `DocumentConverter` for video, audio, PDF, Markdown, images
 2. **Production-Ready** — IBM-maintained, battle-tested in enterprise environments
 3. **Rich Output** — Structured documents with metadata and timestamps, not just raw text
 4. **Flexible Models** — Easy to swap ASR backends (Whisper Turbo, Whisper Large, etc.)
 5. **Video Support** — Processes video files directly using internal FFmpeg integration
-6. **Timestamp Extraction** — TrackSource objects provide segment-level timing data
+6. **Timestamp Extraction** — TrackSource objects provide segment-level timing data from Whisper
 7. **FFmpeg Integration** — Docling handles video processing internally (FFmpeg required as system dependency)
 
 ### OpenRAG SDK Benefits
@@ -327,8 +337,9 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 
 ## 🔧 Configuration Points
 
-### Docling Configuration
+### Whisper/Docling Configuration
 - **Model Selection:** `asr_model_specs.WHISPER_TURBO` (can swap to `WHISPER_LARGE` for higher accuracy)
+- **Transcription Engine:** OpenAI's Whisper (accessed via Docling's AsrPipeline)
 - **Pipeline Options:** `AsrPipelineOptions()` (can configure language, task type, etc.)
 - **Input Formats:** `InputFormat.AUDIO` (handles both video and audio files)
 - **Export Formats:** DocTags (reference) + Markdown with timestamps (for OpenRAG)
@@ -345,7 +356,8 @@ Here's how Docling and OpenRAG SDK work together in the new architecture:
 
 ## 📚 References
 
-- **Docling Documentation:** https://github.com/DS4SD/docling
+- **Whisper (Transcription Engine):** https://github.com/openai/whisper
+- **Docling (Wrapper & Document Format):** https://github.com/DS4SD/docling
 - **Docling Audio Example:** https://github.com/TejasQ/example-docling-media
 - **OpenRAG Documentation:** https://github.com/langflow-ai/openrag
 - **OpenRAG SDK:** https://pypi.org/project/openrag-sdk/
@@ -369,9 +381,12 @@ From `pyproject.toml`:
 
 ## 🎓 Learning Resources
 
-### Understanding Docling
-- Docling is designed for **document understanding**, not just text extraction
-- It preserves structure (headings, tables, lists) across formats
+### Understanding the Stack
+- **Whisper** is the transcription engine — OpenAI's state-of-the-art speech recognition
+- **Docling** is the wrapper — IBM Research's document processing framework
+- Docling is primarily designed for **document understanding** (PDFs, DOCX, etc.)
+- The ASR pipeline is a convenience wrapper around Whisper, not Docling's core focus
+- Docling preserves structure (headings, tables, lists) across formats
 - The ASR pipeline is just one of many specialized pipelines (OCR, layout analysis, etc.)
 - **TrackSource objects** provide segment-level timestamp data from ASR
 - Video files are processed using internal FFmpeg integration
