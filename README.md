@@ -57,7 +57,7 @@ We use **[Docling](https://github.com/DS4SD/docling)**'s `DocumentConverter` and
 
 This pipeline is built entirely on **open source** platforms:
 
-### 🎯 Whisper via Docling (Audio Transcription)
+### 🎯 Whisper via Docling (Video Transcription)
 - **Whisper Turbo** — OpenAI's fast, accurate speech recognition model
 - **AsrPipeline** — Docling's wrapper providing convenient access to Whisper
 - **DocumentConverter** — Unified interface for processing audio/video files
